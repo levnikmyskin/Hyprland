@@ -463,11 +463,24 @@ void CHyprMasterLayout::applyNodeDataToWindow(SMasterNodeData* pNode) {
     const bool DISPLAYTOP    = STICKS(pNode->position.y, PMONITOR->vecPosition.y + PMONITOR->vecReservedTopLeft.y);
     const bool DISPLAYBOTTOM = STICKS(pNode->position.y + pNode->size.y, PMONITOR->vecPosition.y + PMONITOR->vecSize.y - PMONITOR->vecReservedBottomRight.y);
 
-    const auto PBORDERSIZE = &g_pConfigManager->getConfigValuePtr("general:border_size")->intValue;
-    const auto PGAPSIN     = &g_pConfigManager->getConfigValuePtr("general:gaps_in")->intValue;
-    const auto PGAPSOUT    = &g_pConfigManager->getConfigValuePtr("general:gaps_out")->intValue;
-
     const auto PWINDOW = pNode->pWindow;
+    // set specific gaps and rules for this workspace,
+    // if user specified them in config
+    const auto     WORKSPACE_RULE   = g_pConfigManager->getWorkspaceRuleFor(g_pCompositor->getWorkspaceByID(PWINDOW->m_iWorkspaceID));
+    bool           hasWorkspaceRule = !WORKSPACE_RULE.workspaceString.empty();
+
+    const int64_t* PGAPSIN;
+    const int64_t* PGAPSOUT;
+    const int64_t* PBORDERSIZE;
+    if (hasWorkspaceRule) {
+        PGAPSIN     = &WORKSPACE_RULE.gapsIn;
+        PGAPSOUT    = &WORKSPACE_RULE.gapsOut;
+        PBORDERSIZE = &WORKSPACE_RULE.borderSize;
+    } else {
+        PGAPSIN     = &g_pConfigManager->getConfigValuePtr("general:gaps_in")->intValue;
+        PGAPSOUT    = &g_pConfigManager->getConfigValuePtr("general:gaps_out")->intValue;
+        PBORDERSIZE = &g_pConfigManager->getConfigValuePtr("general:border_size")->intValue;
+    }
 
     if (!g_pCompositor->windowValidMapped(PWINDOW)) {
         Debug::log(ERR, "Node %x holding invalid window %x!!", pNode, PWINDOW);
@@ -482,7 +495,7 @@ void CHyprMasterLayout::applyNodeDataToWindow(SMasterNodeData* pNode) {
     auto calcPos  = PWINDOW->m_vPosition + Vector2D(*PBORDERSIZE, *PBORDERSIZE);
     auto calcSize = PWINDOW->m_vSize - Vector2D(2 * *PBORDERSIZE, 2 * *PBORDERSIZE);
 
-    if (*PNOGAPSWHENONLY && !g_pCompositor->isWorkspaceSpecial(PWINDOW->m_iWorkspaceID) &&
+    if (!hasWorkspaceRule && *PNOGAPSWHENONLY && !g_pCompositor->isWorkspaceSpecial(PWINDOW->m_iWorkspaceID) &&
         (getNodesOnWorkspace(PWINDOW->m_iWorkspaceID) == 1 ||
          (PWINDOW->m_bIsFullscreen && g_pCompositor->getWorkspaceByID(PWINDOW->m_iWorkspaceID)->m_efFullscreenMode == FULLSCREEN_MAXIMIZED))) {
         PWINDOW->m_vRealPosition = calcPos - Vector2D(*PBORDERSIZE, *PBORDERSIZE);
@@ -497,9 +510,15 @@ void CHyprMasterLayout::applyNodeDataToWindow(SMasterNodeData* pNode) {
         return;
     }
 
-    PWINDOW->m_sSpecialRenderData.rounding = true;
-    PWINDOW->m_sSpecialRenderData.border   = true;
-    PWINDOW->m_sSpecialRenderData.decorate = true;
+    if (hasWorkspaceRule) {
+        PWINDOW->m_sSpecialRenderData.rounding = WORKSPACE_RULE.rounding == 1;
+        PWINDOW->m_sSpecialRenderData.decorate = WORKSPACE_RULE.decorate == 1;
+        PWINDOW->m_sSpecialRenderData.border   = WORKSPACE_RULE.border == 1;
+    } else {
+        PWINDOW->m_sSpecialRenderData.rounding = true;
+        PWINDOW->m_sSpecialRenderData.decorate = true;
+        PWINDOW->m_sSpecialRenderData.border   = true;
+    }
 
     const auto OFFSETTOPLEFT = Vector2D(DISPLAYLEFT ? *PGAPSOUT : *PGAPSIN, DISPLAYTOP ? *PGAPSOUT : *PGAPSIN);
 
