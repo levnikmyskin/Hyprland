@@ -194,7 +194,8 @@ std::string workspacesRequest(HyprCtl::eHyprCtlOutputFormat format) {
         result += "[";
 
         for (auto& w : g_pCompositor->m_vWorkspaces) {
-            const auto PLASTW = w->getLastFocusedWindow();
+            const auto PLASTW   = w->getLastFocusedWindow();
+            const auto PMONITOR = g_pCompositor->getMonitorFromID(w->m_iMonitorID);
 
             result += getFormat(
                 R"#({
@@ -206,9 +207,8 @@ std::string workspacesRequest(HyprCtl::eHyprCtlOutputFormat format) {
     "lastwindow": "0x%x",
     "lastwindowtitle": "%s"
 },)#",
-                w->m_iID, escapeJSONStrings(w->m_szName).c_str(), escapeJSONStrings(g_pCompositor->getMonitorFromID(w->m_iMonitorID)->szName).c_str(),
-                g_pCompositor->getWindowsOnWorkspace(w->m_iID), ((int)w->m_bHasFullscreenWindow == 1 ? "true" : "false"), PLASTW,
-                PLASTW ? escapeJSONStrings(PLASTW->m_szTitle).c_str() : "");
+                w->m_iID, escapeJSONStrings(w->m_szName).c_str(), escapeJSONStrings(PMONITOR ? PMONITOR->szName : "?").c_str(), g_pCompositor->getWindowsOnWorkspace(w->m_iID),
+                ((int)w->m_bHasFullscreenWindow == 1 ? "true" : "false"), PLASTW, PLASTW ? escapeJSONStrings(PLASTW->m_szTitle).c_str() : "");
         }
 
         // remove trailing comma
@@ -217,10 +217,11 @@ std::string workspacesRequest(HyprCtl::eHyprCtlOutputFormat format) {
         result += "]";
     } else {
         for (auto& w : g_pCompositor->m_vWorkspaces) {
-            const auto PLASTW = w->getLastFocusedWindow();
+            const auto PLASTW   = w->getLastFocusedWindow();
+            const auto PMONITOR = g_pCompositor->getMonitorFromID(w->m_iMonitorID);
             result += getFormat("workspace ID %i (%s) on monitor %s:\n\twindows: %i\n\thasfullscreen: %i\n\tlastwindow: 0x%x\n\tlastwindowtitle: %s\n\n", w->m_iID,
-                                w->m_szName.c_str(), g_pCompositor->getMonitorFromID(w->m_iMonitorID)->szName.c_str(), g_pCompositor->getWindowsOnWorkspace(w->m_iID),
-                                (int)w->m_bHasFullscreenWindow, PLASTW, PLASTW ? PLASTW->m_szTitle.c_str() : "");
+                                w->m_szName.c_str(), PMONITOR ? PMONITOR->szName.c_str() : "?", g_pCompositor->getWindowsOnWorkspace(w->m_iID), (int)w->m_bHasFullscreenWindow,
+                                PLASTW, PLASTW ? PLASTW->m_szTitle.c_str() : "");
         }
     }
     return result;
@@ -531,6 +532,29 @@ std::string animationsRequest(HyprCtl::eHyprCtlOutputFormat format) {
         ret.pop_back();
 
         ret += "]]";
+    }
+
+    return ret;
+}
+
+std::string globalShortcutsRequest(HyprCtl::eHyprCtlOutputFormat format) {
+    std::string ret       = "";
+    const auto  SHORTCUTS = g_pProtocolManager->m_pGlobalShortcutsProtocolManager->getAllShortcuts();
+    if (format == HyprCtl::eHyprCtlOutputFormat::FORMAT_NORMAL) {
+        for (auto& sh : SHORTCUTS)
+            ret += getFormat("%s:%s -> %s\n", sh.appid.c_str(), sh.id.c_str(), sh.description.c_str());
+    } else {
+        ret += "[";
+        for (auto& sh : SHORTCUTS) {
+            ret += getFormat(R"#(
+{
+    "name": "%s",
+    "description": "%s"
+},)#",
+                             escapeJSONStrings(sh.appid + ":" + sh.id).c_str(), escapeJSONStrings(sh.description).c_str());
+        }
+        ret.pop_back();
+        ret += "]\n";
     }
 
     return ret;
@@ -1158,7 +1182,7 @@ std::string dispatchNotify(std::string request) {
         icon = std::stoi(ICON);
     } catch (std::exception& e) { return "invalid arg 1"; }
 
-    if (icon == -1 || icon > ICON_NONE) {
+    if (icon > ICON_NONE || icon < 0) {
         icon = ICON_NONE;
     }
 
@@ -1228,6 +1252,8 @@ std::string getReply(std::string request) {
         return cursorPosRequest(format);
     else if (request == "binds")
         return bindsRequest(format);
+    else if (request == "globalshortcuts")
+        return globalShortcutsRequest(format);
     else if (request == "animations")
         return animationsRequest(format);
     else if (request.find("plugin") == 0)
