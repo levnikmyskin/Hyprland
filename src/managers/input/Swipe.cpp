@@ -172,6 +172,7 @@ void CInputManager::onSwipeEnd(wlr_pointer_swipe_end_event* e) {
         PWORKSPACER->m_bForceRendering = false;
     m_sActiveSwipe.pWorkspaceBegin->m_bForceRendering = false;
 
+    pSwitchedTo->m_sPrevWorkspace  = {m_sActiveSwipe.pWorkspaceBegin->m_iID, m_sActiveSwipe.pWorkspaceBegin->m_szName};
     m_sActiveSwipe.pWorkspaceBegin = nullptr;
 
     g_pInputManager->refocus();
