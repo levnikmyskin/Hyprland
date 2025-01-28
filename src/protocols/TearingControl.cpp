@@ -3,6 +3,7 @@
 #include "../desktop/Window.hpp"
 #include "../Compositor.hpp"
 #include "core/Compositor.hpp"
+#include "../managers/HookSystemManager.hpp"
 
 CTearingControlProtocol::CTearingControlProtocol(const wl_interface* iface, const int& ver, const std::string& name) : IWaylandProtocol(iface, ver, name) {
     static auto P =
@@ -10,7 +11,7 @@ CTearingControlProtocol::CTearingControlProtocol(const wl_interface* iface, cons
 }
 
 void CTearingControlProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CWpTearingControlManagerV1>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CWpTearingControlManagerV1>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CWpTearingControlManagerV1* p) { this->onManagerResourceDestroy(p->resource()); });
 
     RESOURCE->setDestroy([this](CWpTearingControlManagerV1* pMgr) { this->onManagerResourceDestroy(pMgr->resource()); });
@@ -24,9 +25,9 @@ void CTearingControlProtocol::onManagerResourceDestroy(wl_resource* res) {
 }
 
 void CTearingControlProtocol::onGetController(wl_client* client, CWpTearingControlManagerV1* pMgr, uint32_t id, SP<CWLSurfaceResource> surf) {
-    const auto CONTROLLER = m_vTearingControllers.emplace_back(std::make_unique<CTearingControl>(makeShared<CWpTearingControlV1>(client, pMgr->version(), id), surf)).get();
+    const auto CONTROLLER = m_vTearingControllers.emplace_back(makeUnique<CTearingControl>(makeShared<CWpTearingControlV1>(client, pMgr->version(), id), surf)).get();
 
-    if (!CONTROLLER->good()) {
+    if UNLIKELY (!CONTROLLER->good()) {
         pMgr->noMemory();
         m_vTearingControllers.pop_back();
         return;
@@ -66,7 +67,7 @@ void CTearingControl::onHint(wpTearingControlV1PresentationHint hint_) {
 }
 
 void CTearingControl::updateWindow() {
-    if (pWindow.expired())
+    if UNLIKELY (pWindow.expired())
         return;
 
     pWindow->m_bTearingHint = hint == WP_TEARING_CONTROL_V1_PRESENTATION_HINT_ASYNC;

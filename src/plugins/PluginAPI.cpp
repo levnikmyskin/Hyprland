@@ -1,6 +1,12 @@
 #include "PluginAPI.hpp"
 #include "../Compositor.hpp"
 #include "../debug/HyprCtl.hpp"
+#include "../plugins/PluginSystem.hpp"
+#include "../managers/HookSystemManager.hpp"
+#include "../managers/LayoutManager.hpp"
+#include "../managers/eventLoop/EventLoopManager.hpp"
+#include "../config/ConfigManager.hpp"
+#include "../debug/HyprNotificationOverlay.hpp"
 #include <dlfcn.h>
 #include <filesystem>
 
@@ -67,11 +73,11 @@ APICALL bool HyprlandAPI::removeLayout(HANDLE handle, IHyprLayout* layout) {
 }
 
 APICALL bool HyprlandAPI::reloadConfig() {
-    g_pConfigManager->m_bForceReload = true;
+    g_pEventLoopManager->doLater([] { g_pConfigManager->reload(); });
     return true;
 }
 
-APICALL bool HyprlandAPI::addNotification(HANDLE handle, const std::string& text, const CColor& color, const float timeMs) {
+APICALL bool HyprlandAPI::addNotification(HANDLE handle, const std::string& text, const CHyprColor& color, const float timeMs) {
     auto* const PLUGIN = g_pPluginSystem->getPluginByHandle(handle);
 
     if (!PLUGIN)
@@ -100,7 +106,7 @@ APICALL bool HyprlandAPI::removeFunctionHook(HANDLE handle, CFunctionHook* hook)
     return g_pFunctionHookSystem->removeHook(hook);
 }
 
-APICALL bool HyprlandAPI::addWindowDecoration(HANDLE handle, PHLWINDOW pWindow, std::unique_ptr<IHyprWindowDecoration> pDecoration) {
+APICALL bool HyprlandAPI::addWindowDecoration(HANDLE handle, PHLWINDOW pWindow, UP<IHyprWindowDecoration> pDecoration) {
     auto* const PLUGIN = g_pPluginSystem->getPluginByHandle(handle);
 
     if (!PLUGIN)
@@ -202,6 +208,19 @@ APICALL bool HyprlandAPI::addDispatcher(HANDLE handle, const std::string& name, 
     return true;
 }
 
+APICALL bool HyprlandAPI::addDispatcherV2(HANDLE handle, const std::string& name, std::function<SDispatchResult(std::string)> handler) {
+    auto* const PLUGIN = g_pPluginSystem->getPluginByHandle(handle);
+
+    if (!PLUGIN)
+        return false;
+
+    PLUGIN->registeredDispatchers.push_back(name);
+
+    g_pKeybindManager->m_mDispatchers[name] = handler;
+
+    return true;
+}
+
 APICALL bool HyprlandAPI::removeDispatcher(HANDLE handle, const std::string& name) {
     auto* const PLUGIN = g_pPluginSystem->getPluginByHandle(handle);
 
@@ -244,7 +263,7 @@ APICALL bool addNotificationV2(HANDLE handle, const std::unordered_map<std::stri
         if (iterator == data.end())
             return false;
 
-        const auto COLOR = std::any_cast<CColor>(iterator->second);
+        const auto COLOR = std::any_cast<CHyprColor>(iterator->second);
 
         // optional
         eIcons icon = ICON_NONE;
@@ -320,7 +339,7 @@ APICALL std::vector<SFunctionMatch> HyprlandAPI::findFunctionsByName(HANDLE hand
     };
 
     if (SYMBOLS.empty()) {
-        Debug::log(ERR, "Unable to search for function \"{}\": no symbols found in binary (is \"{}\" in path?)", name,
+        Debug::log(ERR, R"(Unable to search for function "{}": no symbols found in binary (is "{}" in path?))", name,
 #ifdef __clang__
                    "llvm-nm"
 #else

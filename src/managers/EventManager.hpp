@@ -1,5 +1,5 @@
 #pragma once
-#include <deque>
+#include <vector>
 #include <vector>
 
 #include "../defines.hpp"
@@ -27,9 +27,9 @@ class CEventManager {
     int         onClientEvent(int fd, uint32_t mask);
 
     struct SClient {
-        int                         fd = -1;
-        std::deque<SP<std::string>> events;
-        wl_event_source*            eventSource = nullptr;
+        int                          fd = -1;
+        std::vector<SP<std::string>> events;
+        wl_event_source*             eventSource = nullptr;
     };
 
     std::vector<SClient>::iterator findClientByFD(int fd);
@@ -42,4 +42,4 @@ class CEventManager {
     std::vector<SClient> m_vClients;
 };
 
-inline std::unique_ptr<CEventManager> g_pEventManager;
+inline UP<CEventManager> g_pEventManager;

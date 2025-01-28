@@ -2,14 +2,18 @@
 #include "../Compositor.hpp"
 #include "ForeignToplevelWlr.hpp"
 #include "../managers/PointerManager.hpp"
+#include "../managers/SeatManager.hpp"
 #include "types/WLBuffer.hpp"
 #include "types/Buffer.hpp"
 #include "../helpers/Format.hpp"
+#include "../managers/EventManager.hpp"
+#include "../managers/input/InputManager.hpp"
+#include "../render/Renderer.hpp"
 
 #include <algorithm>
 
 CToplevelExportClient::CToplevelExportClient(SP<CHyprlandToplevelExportManagerV1> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setOnDestroy([this](CHyprlandToplevelExportManagerV1* pMgr) { PROTO::toplevelExport->destroyResource(this); });
@@ -31,7 +35,7 @@ void CToplevelExportClient::captureToplevel(CHyprlandToplevelExportManagerV1* pM
     const auto FRAME = PROTO::toplevelExport->m_vFrames.emplace_back(
         makeShared<CToplevelExportFrame>(makeShared<CHyprlandToplevelExportFrameV1>(resource->client(), resource->version(), frame), overlayCursor_, handle));
 
-    if (!FRAME->good()) {
+    if UNLIKELY (!FRAME->good()) {
         LOGM(ERR, "Couldn't alloc frame for sharing! (no memory)");
         resource->noMemory();
         PROTO::toplevelExport->destroyResource(FRAME.get());
@@ -74,22 +78,20 @@ CToplevelExportFrame::~CToplevelExportFrame() {
 }
 
 CToplevelExportFrame::CToplevelExportFrame(SP<CHyprlandToplevelExportFrameV1> resource_, int32_t overlayCursor_, PHLWINDOW pWindow_) : resource(resource_), pWindow(pWindow_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
-    overlayCursor = !!overlayCursor_;
+    cursorOverlayRequested = !!overlayCursor_;
 
-    if (!pWindow) {
+    if UNLIKELY (!pWindow) {
         LOGM(ERR, "Client requested sharing of window handle {:x} which does not exist!", pWindow);
         resource->sendFailed();
-        PROTO::toplevelExport->destroyResource(this);
         return;
     }
 
-    if (!pWindow->m_bIsMapped || pWindow->isHidden()) {
+    if UNLIKELY (!pWindow->m_bIsMapped) {
         LOGM(ERR, "Client requested sharing of window handle {:x} which is not shareable!", pWindow);
         resource->sendFailed();
-        PROTO::toplevelExport->destroyResource(this);
         return;
     }
 
@@ -102,60 +104,55 @@ CToplevelExportFrame::CToplevelExportFrame(SP<CHyprlandToplevelExportFrameV1> re
     g_pHyprRenderer->makeEGLCurrent();
 
     shmFormat = g_pHyprOpenGL->getPreferredReadFormat(PMONITOR);
-    if (shmFormat == DRM_FORMAT_INVALID) {
+    if UNLIKELY (shmFormat == DRM_FORMAT_INVALID) {
         LOGM(ERR, "No format supported by renderer in capture toplevel");
         resource->sendFailed();
-        PROTO::toplevelExport->destroyResource(this);
         return;
     }
 
-    const auto PSHMINFO = FormatUtils::getPixelFormatFromDRM(shmFormat);
-    if (!PSHMINFO) {
+    const auto PSHMINFO = NFormatUtils::getPixelFormatFromDRM(shmFormat);
+    if UNLIKELY (!PSHMINFO) {
         LOGM(ERR, "No pixel format supported by renderer in capture toplevel");
         resource->sendFailed();
-        PROTO::toplevelExport->destroyResource(this);
         return;
     }
 
     dmabufFormat = PMONITOR->output->state->state().drmFormat;
 
-    box = {0, 0, (int)(pWindow->m_vRealSize.value().x * PMONITOR->scale), (int)(pWindow->m_vRealSize.value().y * PMONITOR->scale)};
+    box = {0, 0, (int)(pWindow->m_vRealSize->value().x * PMONITOR->scale), (int)(pWindow->m_vRealSize->value().y * PMONITOR->scale)};
 
     box.transform(wlTransformToHyprutils(PMONITOR->transform), PMONITOR->vecTransformedSize.x, PMONITOR->vecTransformedSize.y).round();
 
-    shmStride = FormatUtils::minStride(PSHMINFO, box.w);
+    shmStride = NFormatUtils::minStride(PSHMINFO, box.w);
 
-    resource->sendBuffer(FormatUtils::drmToShm(shmFormat), box.width, box.height, shmStride);
+    resource->sendBuffer(NFormatUtils::drmToShm(shmFormat), box.width, box.height, shmStride);
 
-    if (dmabufFormat != DRM_FORMAT_INVALID) {
+    if LIKELY (dmabufFormat != DRM_FORMAT_INVALID)
         resource->sendLinuxDmabuf(dmabufFormat, box.width, box.height);
-    }
 
     resource->sendBufferDone();
 }
 
 void CToplevelExportFrame::copy(CHyprlandToplevelExportFrameV1* pFrame, wl_resource* buffer_, int32_t ignoreDamage) {
-    if (!good()) {
+    if UNLIKELY (!good()) {
         LOGM(ERR, "No frame in copyFrame??");
         return;
     }
 
-    if (!validMapped(pWindow)) {
+    if UNLIKELY (!validMapped(pWindow)) {
         LOGM(ERR, "Client requested sharing of window handle {:x} which is gone!", pWindow);
         resource->sendFailed();
-        PROTO::toplevelExport->destroyResource(this);
         return;
     }
 
-    if (!pWindow->m_bIsMapped || pWindow->isHidden()) {
+    if UNLIKELY (!pWindow->m_bIsMapped) {
         LOGM(ERR, "Client requested sharing of window handle {:x} which is not shareable (2)!", pWindow);
         resource->sendFailed();
-        PROTO::toplevelExport->destroyResource(this);
         return;
     }
 
     const auto PBUFFER = CWLBufferResource::fromResource(buffer_);
-    if (!PBUFFER) {
+    if UNLIKELY (!PBUFFER) {
         resource->error(HYPRLAND_TOPLEVEL_EXPORT_FRAME_V1_ERROR_INVALID_BUFFER, "invalid buffer");
         PROTO::toplevelExport->destroyResource(this);
         return;
@@ -163,13 +160,13 @@ void CToplevelExportFrame::copy(CHyprlandToplevelExportFrameV1* pFrame, wl_resou
 
     PBUFFER->buffer->lock();
 
-    if (PBUFFER->buffer->size != box.size()) {
+    if UNLIKELY (PBUFFER->buffer->size != box.size()) {
         resource->error(HYPRLAND_TOPLEVEL_EXPORT_FRAME_V1_ERROR_INVALID_BUFFER, "invalid buffer dimensions");
         PROTO::toplevelExport->destroyResource(this);
         return;
     }
 
-    if (buffer) {
+    if UNLIKELY (buffer) {
         resource->error(HYPRLAND_TOPLEVEL_EXPORT_FRAME_V1_ERROR_ALREADY_USED, "frame already used");
         PROTO::toplevelExport->destroyResource(this);
         return;
@@ -201,7 +198,12 @@ void CToplevelExportFrame::copy(CHyprlandToplevelExportFrameV1* pFrame, wl_resou
 
     buffer = PBUFFER->buffer;
 
-    PROTO::toplevelExport->m_vFramesAwaitingWrite.emplace_back(self);
+    m_ignoreDamage = ignoreDamage;
+
+    if (ignoreDamage && validMapped(pWindow))
+        share();
+    else
+        PROTO::toplevelExport->m_vFramesAwaitingWrite.emplace_back(self);
 }
 
 void CToplevelExportFrame::share() {
@@ -225,7 +227,7 @@ void CToplevelExportFrame::share() {
 
     resource->sendFlags((hyprlandToplevelExportFrameV1Flags)0);
 
-    if (!ignoreDamage) {
+    if (!m_ignoreDamage) {
         resource->sendDamage(0, 0, box.width, box.height);
     }
 
@@ -247,6 +249,8 @@ bool CToplevelExportFrame::copyShm(timespec* now) {
     CFramebuffer outFB;
     outFB.alloc(PMONITOR->vecPixelSize.x, PMONITOR->vecPixelSize.y, PMONITOR->output->state->state().drmFormat);
 
+    auto overlayCursor = shouldOverlayCursor();
+
     if (overlayCursor) {
         g_pPointerManager->lockSoftwareForMonitor(PMONITOR->self.lock());
         g_pPointerManager->damageCursor(PMONITOR->self.lock());
@@ -255,7 +259,7 @@ bool CToplevelExportFrame::copyShm(timespec* now) {
     if (!g_pHyprRenderer->beginRender(PMONITOR, fakeDamage, RENDER_MODE_FULL_FAKE, nullptr, &outFB))
         return false;
 
-    g_pHyprOpenGL->clear(CColor(0, 0, 0, 1.0));
+    g_pHyprOpenGL->clear(CHyprColor(0, 0, 0, 1.0));
 
     // render client at 0,0
     g_pHyprRenderer->m_bBlockSurfaceFeedback = g_pHyprRenderer->shouldRenderWindow(pWindow); // block the feedback to avoid spamming the surface if it's visible
@@ -263,9 +267,9 @@ bool CToplevelExportFrame::copyShm(timespec* now) {
     g_pHyprRenderer->m_bBlockSurfaceFeedback = false;
 
     if (overlayCursor)
-        g_pPointerManager->renderSoftwareCursorsFor(PMONITOR->self.lock(), now, fakeDamage, g_pInputManager->getMouseCoordsInternal() - pWindow->m_vRealPosition.value());
+        g_pPointerManager->renderSoftwareCursorsFor(PMONITOR->self.lock(), now, fakeDamage, g_pInputManager->getMouseCoordsInternal() - pWindow->m_vRealPosition->value());
 
-    const auto PFORMAT = FormatUtils::getPixelFormatFromDRM(shm.format);
+    const auto PFORMAT = NFormatUtils::getPixelFormatFromDRM(shm.format);
     if (!PFORMAT) {
         g_pHyprRenderer->endRender();
         return false;
@@ -300,6 +304,8 @@ bool CToplevelExportFrame::copyDmabuf(timespec* now) {
 
     CRegion    fakeDamage{0, 0, INT16_MAX, INT16_MAX};
 
+    auto       overlayCursor = shouldOverlayCursor();
+
     if (overlayCursor) {
         g_pPointerManager->lockSoftwareForMonitor(PMONITOR->self.lock());
         g_pPointerManager->damageCursor(PMONITOR->self.lock());
@@ -308,14 +314,14 @@ bool CToplevelExportFrame::copyDmabuf(timespec* now) {
     if (!g_pHyprRenderer->beginRender(PMONITOR, fakeDamage, RENDER_MODE_TO_BUFFER, buffer.lock()))
         return false;
 
-    g_pHyprOpenGL->clear(CColor(0, 0, 0, 1.0));
+    g_pHyprOpenGL->clear(CHyprColor(0, 0, 0, 1.0));
 
     g_pHyprRenderer->m_bBlockSurfaceFeedback = g_pHyprRenderer->shouldRenderWindow(pWindow); // block the feedback to avoid spamming the surface if it's visible
     g_pHyprRenderer->renderWindow(pWindow, PMONITOR, now, false, RENDER_PASS_ALL, true, true);
     g_pHyprRenderer->m_bBlockSurfaceFeedback = false;
 
     if (overlayCursor)
-        g_pPointerManager->renderSoftwareCursorsFor(PMONITOR->self.lock(), now, fakeDamage, g_pInputManager->getMouseCoordsInternal() - pWindow->m_vRealPosition.value());
+        g_pPointerManager->renderSoftwareCursorsFor(PMONITOR->self.lock(), now, fakeDamage, g_pInputManager->getMouseCoordsInternal() - pWindow->m_vRealPosition->value());
 
     g_pHyprOpenGL->m_RenderData.blockScreenShader = true;
     g_pHyprRenderer->endRender();
@@ -326,6 +332,20 @@ bool CToplevelExportFrame::copyDmabuf(timespec* now) {
     }
 
     return true;
+}
+
+bool CToplevelExportFrame::shouldOverlayCursor() const {
+    if (!cursorOverlayRequested)
+        return false;
+
+    auto pointerSurfaceResource = g_pSeatManager->state.pointerFocus.lock();
+
+    if (!pointerSurfaceResource)
+        return false;
+
+    auto pointerSurface = CWLSurface::fromResource(pointerSurfaceResource);
+
+    return pointerSurface && pointerSurface->getWindow() == pWindow;
 }
 
 bool CToplevelExportFrame::good() {
@@ -367,6 +387,8 @@ void CToplevelExportProtocol::onOutputCommit(PHLMONITOR pMonitor) {
         return; // nothing to share
 
     std::vector<WP<CToplevelExportFrame>> framesToRemove;
+    // reserve number of elements to avoid reallocations
+    framesToRemove.reserve(m_vFramesAwaitingWrite.size());
 
     // share frame if correct output
     for (auto const& f : m_vFramesAwaitingWrite) {
@@ -386,7 +408,7 @@ void CToplevelExportProtocol::onOutputCommit(PHLMONITOR pMonitor) {
         if (pMonitor != PWINDOW->m_pMonitor.lock())
             continue;
 
-        CBox geometry = {PWINDOW->m_vRealPosition.value().x, PWINDOW->m_vRealPosition.value().y, PWINDOW->m_vRealSize.value().x, PWINDOW->m_vRealSize.value().y};
+        CBox geometry = {PWINDOW->m_vRealPosition->value().x, PWINDOW->m_vRealPosition->value().y, PWINDOW->m_vRealSize->value().x, PWINDOW->m_vRealSize->value().y};
 
         if (geometry.intersection({pMonitor->vecPosition, pMonitor->vecSize}).empty())
             continue;

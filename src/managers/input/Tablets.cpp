@@ -1,5 +1,5 @@
 #include "InputManager.hpp"
-#include "../../Compositor.hpp"
+#include "../../desktop/Window.hpp"
 #include "../../protocols/Tablet.hpp"
 #include "../../devices/Tablet.hpp"
 #include "../../managers/PointerManager.hpp"
@@ -69,7 +69,7 @@ static void refocusTablet(SP<CTablet> tab, SP<CTabletTool> tool, bool motion = f
 
         // yes, this technically ignores any regions set by the app. Too bad!
         if (LASTHLSURFACE->getWindow())
-            local = tool->absolutePos * LASTHLSURFACE->getWindow()->m_vRealSize.goal();
+            local = tool->absolutePos * LASTHLSURFACE->getWindow()->m_vRealSize->goal();
         else
             local = tool->absolutePos * BOX->size();
 
@@ -159,12 +159,13 @@ void CInputManager::onTabletAxis(CTablet::SAxisEvent e) {
 void CInputManager::onTabletTip(CTablet::STipEvent e) {
     const auto PTAB  = e.tablet;
     const auto PTOOL = ensureTabletToolPresent(e.tool);
+    const auto POS   = e.tip;
+    g_pPointerManager->warpAbsolute(POS, PTAB);
+    refocusTablet(PTAB, PTOOL, true);
 
-    if (e.in) {
-        simulateMouseMovement();
-        refocusTablet(PTAB, PTOOL);
+    if (e.in)
         PROTO::tablet->down(PTOOL);
-    } else
+    else
         PROTO::tablet->up(PTOOL);
 
     PTOOL->isDown = e.in;
@@ -198,7 +199,7 @@ void CInputManager::onTabletProximity(CTablet::SProximityEvent e) {
 
 void CInputManager::newTablet(SP<Aquamarine::ITablet> pDevice) {
     const auto PNEWTABLET = m_vTablets.emplace_back(CTablet::create(pDevice));
-    m_vHIDs.push_back(PNEWTABLET);
+    m_vHIDs.emplace_back(PNEWTABLET);
 
     try {
         PNEWTABLET->hlName = g_pInputManager->getNameForNewDevice(pDevice->getName());
@@ -226,7 +227,7 @@ SP<CTabletTool> CInputManager::ensureTabletToolPresent(SP<Aquamarine::ITabletToo
     }
 
     const auto PTOOL = m_vTabletTools.emplace_back(CTabletTool::create(pTool));
-    m_vHIDs.push_back(PTOOL);
+    m_vHIDs.emplace_back(PTOOL);
 
     try {
         PTOOL->hlName = g_pInputManager->getNameForNewDevice(pTool->getName());
@@ -246,7 +247,7 @@ SP<CTabletTool> CInputManager::ensureTabletToolPresent(SP<Aquamarine::ITabletToo
 
 void CInputManager::newTabletPad(SP<Aquamarine::ITabletPad> pDevice) {
     const auto PNEWPAD = m_vTabletPads.emplace_back(CTabletPad::create(pDevice));
-    m_vHIDs.push_back(PNEWPAD);
+    m_vHIDs.emplace_back(PNEWPAD);
 
     try {
         PNEWPAD->hlName = g_pInputManager->getNameForNewDevice(pDevice->getName());

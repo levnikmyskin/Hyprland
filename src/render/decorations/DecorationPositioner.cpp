@@ -1,5 +1,7 @@
 #include "DecorationPositioner.hpp"
-#include "../../Compositor.hpp"
+#include "../../desktop/Window.hpp"
+#include "../../managers/HookSystemManager.hpp"
+#include "../../managers/LayoutManager.hpp"
 
 CDecorationPositioner::CDecorationPositioner() {
     static auto P = g_pHookSystem->hookDynamic("closeWindow", [this](void* call, SCallbackInfo& info, std::any data) {
@@ -77,7 +79,7 @@ CDecorationPositioner::SWindowPositioningData* CDecorationPositioner::getDataFor
     if (it != m_vWindowPositioningDatas.end())
         return it->get();
 
-    const auto DATA = m_vWindowPositioningDatas.emplace_back(std::make_unique<CDecorationPositioner::SWindowPositioningData>(pWindow, pDecoration)).get();
+    const auto DATA = m_vWindowPositioningDatas.emplace_back(makeUnique<CDecorationPositioner::SWindowPositioningData>(pWindow, pDecoration)).get();
 
     DATA->positioningInfo = pDecoration->getPositioningInfo();
 
@@ -85,12 +87,7 @@ CDecorationPositioner::SWindowPositioningData* CDecorationPositioner::getDataFor
 }
 
 void CDecorationPositioner::sanitizeDatas() {
-    std::erase_if(m_mWindowDatas, [](const auto& other) {
-        if (!valid(other.first))
-            return true;
-
-        return false;
-    });
+    std::erase_if(m_mWindowDatas, [](const auto& other) { return !valid(other.first); });
     std::erase_if(m_vWindowPositioningDatas, [](const auto& other) {
         if (!validMapped(other->pWindow))
             return true;
@@ -125,11 +122,14 @@ void CDecorationPositioner::onWindowUpdate(PHLWINDOW pWindow) {
 
     //
     std::vector<CDecorationPositioner::SWindowPositioningData*> datas;
+    // reserve to avoid reallocations
+    datas.reserve(pWindow->m_dWindowDecorations.size());
+
     for (auto const& wd : pWindow->m_dWindowDecorations) {
         datas.push_back(getDataFor(wd.get(), pWindow));
     }
 
-    if (WINDOWDATA->lastWindowSize == pWindow->m_vRealSize.value() /* position not changed */
+    if (WINDOWDATA->lastWindowSize == pWindow->m_vRealSize->value() /* position not changed */
         && std::all_of(m_vWindowPositioningDatas.begin(), m_vWindowPositioningDatas.end(),
                        [pWindow](const auto& data) { return pWindow != data->pWindow.lock() || !data->needsReposition; })
         /* all window datas are either not for this window or don't need a reposition */
@@ -137,9 +137,9 @@ void CDecorationPositioner::onWindowUpdate(PHLWINDOW pWindow) {
     )
         return;
 
-    WINDOWDATA->lastWindowSize = pWindow->m_vRealSize.value();
+    WINDOWDATA->lastWindowSize = pWindow->m_vRealSize->value();
     WINDOWDATA->needsRecalc    = false;
-    const bool EPHEMERAL       = pWindow->m_vRealSize.isBeingAnimated();
+    const bool EPHEMERAL       = pWindow->m_vRealSize->isBeingAnimated();
 
     std::sort(datas.begin(), datas.end(), [](const auto& a, const auto& b) { return a->positioningInfo.priority > b->positioningInfo.priority; });
 

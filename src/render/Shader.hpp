@@ -26,6 +26,7 @@ class CShader {
     GLint   fullSizeUntransformed = -1;
     GLint   radius                = -1;
     GLint   radiusOuter           = -1;
+    GLfloat roundingPower         = -1;
 
     GLint   thick = -1;
 
@@ -38,9 +39,13 @@ class CShader {
     GLint   applyTint = -1;
     GLint   tint      = -1;
 
-    GLint   gradient       = -1;
-    GLint   gradientLength = -1;
-    GLint   angle          = -1;
+    GLint   gradient        = -1;
+    GLint   gradientLength  = -1;
+    GLint   angle           = -1;
+    GLint   gradient2       = -1;
+    GLint   gradient2Length = -1;
+    GLint   angle2          = -1;
+    GLint   gradientLerp    = -1;
 
     float   initialTime = 0;
     GLint   time        = -1;

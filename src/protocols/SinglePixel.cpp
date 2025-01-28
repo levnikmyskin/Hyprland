@@ -1,8 +1,9 @@
 #include "SinglePixel.hpp"
+#include "../desktop/LayerSurface.hpp"
 #include <limits>
 #include "render/Renderer.hpp"
 
-CSinglePixelBuffer::CSinglePixelBuffer(uint32_t id, wl_client* client, CColor col_) {
+CSinglePixelBuffer::CSinglePixelBuffer(uint32_t id, wl_client* client, CHyprColor col_) {
     LOGM(LOG, "New single-pixel buffer with color 0x{:x}", col_.getAsHex());
 
     color = col_.getAsHex();
@@ -59,10 +60,10 @@ bool CSinglePixelBuffer::good() {
     return resource->good();
 }
 
-CSinglePixelBufferResource::CSinglePixelBufferResource(uint32_t id, wl_client* client, CColor color) {
+CSinglePixelBufferResource::CSinglePixelBufferResource(uint32_t id, wl_client* client, CHyprColor color) {
     buffer = makeShared<CSinglePixelBuffer>(id, client, color);
 
-    if (!buffer->good())
+    if UNLIKELY (!buffer->good())
         return;
 
     buffer->resource->buffer = buffer;
@@ -82,18 +83,18 @@ bool CSinglePixelBufferResource::good() {
 }
 
 CSinglePixelBufferManagerResource::CSinglePixelBufferManagerResource(SP<CWpSinglePixelBufferManagerV1> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setDestroy([this](CWpSinglePixelBufferManagerV1* r) { PROTO::singlePixel->destroyResource(this); });
     resource->setOnDestroy([this](CWpSinglePixelBufferManagerV1* r) { PROTO::singlePixel->destroyResource(this); });
 
     resource->setCreateU32RgbaBuffer([this](CWpSinglePixelBufferManagerV1* res, uint32_t id, uint32_t r, uint32_t g, uint32_t b, uint32_t a) {
-        CColor     color{r / (float)std::numeric_limits<uint32_t>::max(), g / (float)std::numeric_limits<uint32_t>::max(), b / (float)std::numeric_limits<uint32_t>::max(),
-                     a / (float)std::numeric_limits<uint32_t>::max()};
+        CHyprColor color{r / (float)std::numeric_limits<uint32_t>::max(), g / (float)std::numeric_limits<uint32_t>::max(), b / (float)std::numeric_limits<uint32_t>::max(),
+                         a / (float)std::numeric_limits<uint32_t>::max()};
         const auto RESOURCE = PROTO::singlePixel->m_vBuffers.emplace_back(makeShared<CSinglePixelBufferResource>(id, resource->client(), color));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             res->noMemory();
             PROTO::singlePixel->m_vBuffers.pop_back();
             return;
@@ -112,7 +113,7 @@ CSinglePixelProtocol::CSinglePixelProtocol(const wl_interface* iface, const int&
 void CSinglePixelProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
     const auto RESOURCE = m_vManagers.emplace_back(makeShared<CSinglePixelBufferManagerResource>(makeShared<CWpSinglePixelBufferManagerV1>(client, ver, id)));
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         wl_client_post_no_memory(client);
         m_vManagers.pop_back();
         return;

@@ -10,7 +10,7 @@
 #include <fcntl.h>
 
 CWLTouchResource::CWLTouchResource(SP<CWlTouch> resource_, SP<CWLSeatResource> owner_) : owner(owner_), resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setRelease([this](CWlTouch* r) { PROTO::seat->destroyResource(this); });
@@ -105,7 +105,7 @@ void CWLTouchResource::sendOrientation(int32_t id, double angle) {
 }
 
 CWLPointerResource::CWLPointerResource(SP<CWlPointer> resource_, SP<CWLSeatResource> owner_) : owner(owner_), resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setRelease([this](CWlPointer* r) { PROTO::seat->destroyResource(this); });
@@ -134,6 +134,10 @@ CWLPointerResource::CWLPointerResource(SP<CWlPointer> resource_, SP<CWLSeatResou
 
     if (g_pSeatManager->state.pointerFocus && g_pSeatManager->state.pointerFocus->client() == resource->client())
         sendEnter(g_pSeatManager->state.pointerFocus.lock(), {-1, -1} /* Coords don't really matter that much, they will be updated next move */);
+}
+
+int CWLPointerResource::version() {
+    return resource->version();
 }
 
 bool CWLPointerResource::good() {
@@ -288,7 +292,7 @@ void CWLPointerResource::sendAxisRelativeDirection(wl_pointer_axis axis, wl_poin
 }
 
 CWLKeyboardResource::CWLKeyboardResource(SP<CWlKeyboard> resource_, SP<CWLSeatResource> owner_) : owner(owner_), resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setRelease([this](CWlKeyboard* r) { PROTO::seat->destroyResource(this); });
@@ -415,7 +419,7 @@ void CWLKeyboardResource::repeatInfo(uint32_t rate, uint32_t delayMs) {
 }
 
 CWLSeatResource::CWLSeatResource(SP<CWlSeat> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setOnDestroy([this](CWlSeat* r) {
@@ -432,37 +436,37 @@ CWLSeatResource::CWLSeatResource(SP<CWlSeat> resource_) : resource(resource_) {
     resource->setGetKeyboard([this](CWlSeat* r, uint32_t id) {
         const auto RESOURCE = PROTO::seat->m_vKeyboards.emplace_back(makeShared<CWLKeyboardResource>(makeShared<CWlKeyboard>(r->client(), r->version(), id), self.lock()));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::seat->m_vKeyboards.pop_back();
             return;
         }
 
-        keyboards.push_back(RESOURCE);
+        keyboards.emplace_back(RESOURCE);
     });
 
     resource->setGetPointer([this](CWlSeat* r, uint32_t id) {
         const auto RESOURCE = PROTO::seat->m_vPointers.emplace_back(makeShared<CWLPointerResource>(makeShared<CWlPointer>(r->client(), r->version(), id), self.lock()));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::seat->m_vPointers.pop_back();
             return;
         }
 
-        pointers.push_back(RESOURCE);
+        pointers.emplace_back(RESOURCE);
     });
 
     resource->setGetTouch([this](CWlSeat* r, uint32_t id) {
         const auto RESOURCE = PROTO::seat->m_vTouches.emplace_back(makeShared<CWLTouchResource>(makeShared<CWlTouch>(r->client(), r->version(), id), self.lock()));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::seat->m_vTouches.pop_back();
             return;
         }
 
-        touches.push_back(RESOURCE);
+        touches.emplace_back(RESOURCE);
     });
 
     if (resource->version() >= 2)
@@ -502,7 +506,7 @@ CWLSeatProtocol::CWLSeatProtocol(const wl_interface* iface, const int& ver, cons
 void CWLSeatProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
     const auto RESOURCE = m_vSeatResources.emplace_back(makeShared<CWLSeatResource>(makeShared<CWlSeat>(client, ver, id)));
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         wl_client_post_no_memory(client);
         m_vSeatResources.pop_back();
         return;

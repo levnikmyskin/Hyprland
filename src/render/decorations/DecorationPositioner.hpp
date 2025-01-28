@@ -9,12 +9,12 @@
 class CWindow;
 class IHyprWindowDecoration;
 
-enum eDecorationPositioningPolicy {
+enum eDecorationPositioningPolicy : uint8_t {
     DECORATION_POSITION_ABSOLUTE = 0, /* Decoration wants absolute positioning */
     DECORATION_POSITION_STICKY,       /* Decoration is stuck to some edge of a window */
 };
 
-enum eDecorationEdges {
+enum eDecorationEdges : uint8_t {
     DECORATION_EDGE_TOP    = 1 << 0,
     DECORATION_EDGE_BOTTOM = 1 << 1,
     DECORATION_EDGE_LEFT   = 1 << 2,
@@ -87,13 +87,13 @@ class CDecorationPositioner {
         bool        needsRecalc    = false;
     };
 
-    std::map<PHLWINDOWREF, SWindowData>                  m_mWindowDatas;
-    std::vector<std::unique_ptr<SWindowPositioningData>> m_vWindowPositioningDatas;
+    std::map<PHLWINDOWREF, SWindowData>     m_mWindowDatas;
+    std::vector<UP<SWindowPositioningData>> m_vWindowPositioningDatas;
 
-    SWindowPositioningData*                              getDataFor(IHyprWindowDecoration* pDecoration, PHLWINDOW pWindow);
-    void                                                 onWindowUnmap(PHLWINDOW pWindow);
-    void                                                 onWindowMap(PHLWINDOW pWindow);
-    void                                                 sanitizeDatas();
+    SWindowPositioningData*                 getDataFor(IHyprWindowDecoration* pDecoration, PHLWINDOW pWindow);
+    void                                    onWindowUnmap(PHLWINDOW pWindow);
+    void                                    onWindowMap(PHLWINDOW pWindow);
+    void                                    sanitizeDatas();
 };
 
-inline std::unique_ptr<CDecorationPositioner> g_pDecorationPositioner;
+inline UP<CDecorationPositioner> g_pDecorationPositioner;

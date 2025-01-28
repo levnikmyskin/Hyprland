@@ -4,13 +4,15 @@
 #include "../config/ConfigValue.hpp"
 #include "../protocols/core/Compositor.hpp"
 #include "../protocols/core/Subcompositor.hpp"
+#include "../render/Renderer.hpp"
+#include "../managers/input/InputManager.hpp"
 
 CSubsurface::CSubsurface(PHLWINDOW pOwner) : m_pWindowParent(pOwner) {
     initSignals();
     initExistingSubsurfaces(pOwner->m_pWLSurface->resource());
 }
 
-CSubsurface::CSubsurface(CPopup* pOwner) : m_pPopupParent(pOwner) {
+CSubsurface::CSubsurface(WP<CPopup> pOwner) : m_pPopupParent(pOwner) {
     initSignals();
     initExistingSubsurfaces(pOwner->m_pWLSurface->resource());
 }
@@ -22,7 +24,7 @@ CSubsurface::CSubsurface(SP<CWLSubsurfaceResource> pSubsurface, PHLWINDOW pOwner
     initExistingSubsurfaces(pSubsurface->surface.lock());
 }
 
-CSubsurface::CSubsurface(SP<CWLSubsurfaceResource> pSubsurface, CPopup* pOwner) : m_pSubsurface(pSubsurface), m_pPopupParent(pOwner) {
+CSubsurface::CSubsurface(SP<CWLSubsurfaceResource> pSubsurface, WP<CPopup> pOwner) : m_pSubsurface(pSubsurface), m_pPopupParent(pOwner) {
     m_pWLSurface = CWLSurface::create();
     m_pWLSurface->assign(pSubsurface->surface.lock(), this);
     initSignals();
@@ -99,11 +101,20 @@ void CSubsurface::onCommit() {
     checkSiblingDamage();
 
     if (m_vLastSize != m_pWLSurface->resource()->current.size) {
-        CBox box{COORDS, m_vLastSize};
-        g_pHyprRenderer->damageBox(&box);
-        m_vLastSize = m_pWLSurface->resource()->current.size;
-        box         = {COORDS, m_vLastSize};
-        g_pHyprRenderer->damageBox(&box);
+        // TODO: fix this
+        // CBox box{COORDS, m_vLastSize};
+        // g_pHyprRenderer->damageBox(box);
+        // m_vLastSize = m_pWLSurface->resource()->current.size;
+        // box         = {COORDS, m_vLastSize};
+        // g_pHyprRenderer->damageBox(box);
+
+        CBox box;
+        if (m_pPopupParent)
+            box = m_pPopupParent->m_pWLSurface->getSurfaceBoxGlobal().value_or(CBox{});
+        else if (m_pWindowParent)
+            box = m_pWindowParent->getWindowMainSurfaceBox();
+
+        g_pHyprRenderer->damageBox(box);
     }
 }
 
@@ -121,16 +132,18 @@ void CSubsurface::onDestroy() {
 }
 
 void CSubsurface::onNewSubsurface(SP<CWLSubsurfaceResource> pSubsurface) {
-    CSubsurface* PSUBSURFACE = nullptr;
+    WP<CSubsurface> PSUBSURFACE;
 
     if (!m_pWindowParent.expired())
-        PSUBSURFACE = m_vChildren.emplace_back(std::make_unique<CSubsurface>(pSubsurface, m_pWindowParent.lock())).get();
+        PSUBSURFACE = m_vChildren.emplace_back(makeUnique<CSubsurface>(pSubsurface, m_pWindowParent.lock()));
     else if (m_pPopupParent)
-        PSUBSURFACE = m_vChildren.emplace_back(std::make_unique<CSubsurface>(pSubsurface, m_pPopupParent)).get();
+        PSUBSURFACE = m_vChildren.emplace_back(makeUnique<CSubsurface>(pSubsurface, m_pPopupParent));
+
+    PSUBSURFACE->m_pSelf = PSUBSURFACE;
 
     ASSERT(PSUBSURFACE);
 
-    PSUBSURFACE->m_pParent = this;
+    PSUBSURFACE->m_pParent = PSUBSURFACE;
 }
 
 void CSubsurface::onMap() {
@@ -139,7 +152,7 @@ void CSubsurface::onMap() {
     const auto COORDS = coordsGlobal();
     CBox       box{COORDS, m_vLastSize};
     box.expand(4);
-    g_pHyprRenderer->damageBox(&box);
+    g_pHyprRenderer->damageBox(box);
 
     if (!m_pWindowParent.expired())
         m_pWindowParent->updateSurfaceScaleTransformDetails();
@@ -149,7 +162,7 @@ void CSubsurface::onUnmap() {
     const auto COORDS = coordsGlobal();
     CBox       box{COORDS, m_vLastSize};
     box.expand(4);
-    g_pHyprRenderer->damageBox(&box);
+    g_pHyprRenderer->damageBox(box);
 
     if (m_pWLSurface->resource() == g_pCompositor->m_pLastFocus)
         g_pInputManager->releaseAllMouseButtons();
@@ -169,7 +182,7 @@ Vector2D CSubsurface::coordsGlobal() {
     Vector2D coords = coordsRelativeToParent();
 
     if (!m_pWindowParent.expired())
-        coords += m_pWindowParent->m_vRealPosition.value();
+        coords += m_pWindowParent->m_vRealPosition->value();
     else if (m_pPopupParent)
         coords += m_pPopupParent->coordsGlobal();
 

@@ -6,7 +6,6 @@
 #ifndef NO_XWAYLAND
 
 #include <ranges>
-#include "../Compositor.hpp"
 
 CXWaylandSurface::CXWaylandSurface(uint32_t xID_, CBox geometry_, bool OR) : xID(xID_), geometry(geometry_), overrideRedirect(OR) {
     xcb_res_query_client_ids_cookie_t client_id_cookie = {0};
@@ -33,7 +32,7 @@ CXWaylandSurface::CXWaylandSurface(uint32_t xID_, CBox geometry_, bool OR) : xID
             }
             xcb_res_client_id_value_next(&iter);
         }
-        if (ppid == NULL) {
+        if (!ppid) {
             free(reply);
             return;
         }
@@ -170,6 +169,22 @@ void CXWaylandSurface::configure(const CBox& box) {
     uint32_t values[] = {box.x, box.y, box.width, box.height, 0};
     xcb_configure_window(g_pXWayland->pWM->connection, xID, mask, values);
 
+    if (geometry.width == box.width && geometry.height == box.height) {
+        // ICCCM requires a synthetic event when window size is not changed
+        xcb_configure_notify_event_t e;
+        e.response_type     = XCB_CONFIGURE_NOTIFY;
+        e.event             = xID;
+        e.window            = xID;
+        e.x                 = box.x;
+        e.y                 = box.y;
+        e.width             = box.width;
+        e.height            = box.height;
+        e.border_width      = 0;
+        e.above_sibling     = XCB_NONE;
+        e.override_redirect = overrideRedirect;
+        xcb_send_event(g_pXWayland->pWM->connection, false, xID, XCB_EVENT_MASK_STRUCTURE_NOTIFY, (const char*)&e);
+    }
+
     g_pXWayland->pWM->updateClientList();
 
     xcb_flush(g_pXWayland->pWM->connection);
@@ -208,7 +223,7 @@ void CXWaylandSurface::restackToTop() {
 }
 
 void CXWaylandSurface::close() {
-    xcb_client_message_data_t msg = {0};
+    xcb_client_message_data_t msg = {};
     msg.data32[0]                 = HYPRATOMS["WM_DELETE_WINDOW"];
     msg.data32[1]                 = XCB_CURRENT_TIME;
     g_pXWayland->pWM->sendWMMessage(self.lock(), &msg, XCB_EVENT_MASK_NO_EVENT);

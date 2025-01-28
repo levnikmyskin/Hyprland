@@ -10,6 +10,7 @@
 #include "../../devices/IPointer.hpp"
 #include "../../devices/ITouch.hpp"
 #include "../../devices/Tablet.hpp"
+#include "../SessionLockManager.hpp"
 
 class CPointerConstraint;
 class CWindow;
@@ -26,12 +27,12 @@ AQUAMARINE_FORWARD(ITablet);
 AQUAMARINE_FORWARD(ITabletTool);
 AQUAMARINE_FORWARD(ITabletPad);
 
-enum eClickBehaviorMode {
+enum eClickBehaviorMode : uint8_t {
     CLICKMODE_DEFAULT = 0,
     CLICKMODE_KILL
 };
 
-enum eMouseBindMode {
+enum eMouseBindMode : int8_t {
     MBIND_INVALID            = -1,
     MBIND_MOVE               = 0,
     MBIND_RESIZE             = 1,
@@ -39,8 +40,8 @@ enum eMouseBindMode {
     MBIND_RESIZE_FORCE_RATIO = 3
 };
 
-enum eBorderIconDirection {
-    BORDERICON_NONE,
+enum eBorderIconDirection : uint8_t {
+    BORDERICON_NONE = 0,
     BORDERICON_UP,
     BORDERICON_DOWN,
     BORDERICON_LEFT,
@@ -52,10 +53,11 @@ enum eBorderIconDirection {
 };
 
 struct STouchData {
-    PHLWINDOWREF           touchFocusWindow;
-    PHLLSREF               touchFocusLS;
-    WP<CWLSurfaceResource> touchFocusSurface;
-    Vector2D               touchSurfaceOrigin;
+    WP<SSessionLockSurface> touchFocusLockSurface;
+    PHLWINDOWREF            touchFocusWindow;
+    PHLLSREF                touchFocusLS;
+    WP<CWLSurfaceResource>  touchFocusSurface;
+    Vector2D                touchSurfaceOrigin;
 };
 
 // The third row is always 0 0 1 and is not expected by `libinput_device_config_calibration_set_matrix`
@@ -163,7 +165,7 @@ class CInputManager {
     std::list<SSwitchDevice> m_lSwitches;
 
     // Exclusive layer surfaces
-    std::deque<PHLLSREF> m_dExclusiveLSes;
+    std::vector<PHLLSREF> m_dExclusiveLSes;
 
     // constraints
     std::vector<WP<CPointerConstraint>> m_vConstraints;
@@ -171,6 +173,7 @@ class CInputManager {
     //
     void              newIdleInhibitor(std::any);
     void              recheckIdleInhibitorStatus();
+    bool              isWindowInhibiting(const PHLWINDOW& pWindow, bool onlyHl = true);
 
     SSwipeGesture     m_sActiveSwipe;
 
@@ -238,7 +241,8 @@ class CInputManager {
 
     uint32_t           m_uiCapabilities = 0;
 
-    void               mouseMoveUnified(uint32_t, bool refocus = false);
+    void               mouseMoveUnified(uint32_t, bool refocus = false, bool mouse = false);
+    void               recheckMouseWarpOnMouseInput();
 
     SP<CTabletTool>    ensureTabletToolPresent(SP<Aquamarine::ITabletTool>);
 
@@ -248,6 +252,10 @@ class CInputManager {
     WP<CWLSurfaceResource> m_pFoundSurfaceToFocus;
     PHLLSREF               m_pFoundLSToFocus;
     PHLWINDOWREF           m_pFoundWindowToFocus;
+
+    // used for warping back after non-mouse input
+    Vector2D m_vLastMousePos   = {};
+    bool     m_bLastInputMouse = true;
 
     // for holding focus on buttons held
     bool m_bFocusHeldByButtons   = false;
@@ -262,7 +270,7 @@ class CInputManager {
         bool                nonDesktop = false;
         CHyprSignalListener surfaceDestroyListener;
     };
-    std::vector<std::unique_ptr<SIdleInhibitor>> m_vIdleInhibitors;
+    std::vector<UP<SIdleInhibitor>> m_vIdleInhibitors;
 
     // swipe
     void beginWorkspaceSwipe();
@@ -276,7 +284,7 @@ class CInputManager {
     void setCursorImageOverride(const std::string& name);
 
     // cursor surface
-    struct cursorSI {
+    struct {
         bool           hidden = false; // null surface = hidden
         SP<CWLSurface> wlSurface;
         Vector2D       vHotspot;
@@ -288,8 +296,8 @@ class CInputManager {
 
     // discrete scrolling emulation using v120 data
     struct {
-        bool     lastEventSign     = 0;
-        bool     lastEventAxis     = 0;
+        bool     lastEventSign     = false;
+        bool     lastEventAxis     = false;
         uint32_t lastEventTime     = 0;
         uint32_t accumulatedScroll = 0;
     } m_ScrollWheelState;
@@ -298,4 +306,4 @@ class CInputManager {
     friend class CWLSurface;
 };
 
-inline std::unique_ptr<CInputManager> g_pInputManager;
+inline UP<CInputManager> g_pInputManager;

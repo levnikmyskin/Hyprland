@@ -10,7 +10,7 @@ void CTextInputV3::SState::reset() {
 }
 
 CTextInputV3::CTextInputV3(SP<CZwpTextInputV3> resource_) : resource(resource_) {
-    if (!resource->resource())
+    if UNLIKELY (!resource->resource())
         return;
 
     LOGM(LOG, "New tiv3 at {:016x}", (uintptr_t)this);
@@ -110,7 +110,7 @@ CTextInputV3Protocol::CTextInputV3Protocol(const wl_interface* iface, const int&
 }
 
 void CTextInputV3Protocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CZwpTextInputManagerV3>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CZwpTextInputManagerV3>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CZwpTextInputManagerV3* p) { this->onManagerResourceDestroy(p->resource()); });
 
     RESOURCE->setDestroy([this](CZwpTextInputManagerV3* pMgr) { this->onManagerResourceDestroy(pMgr->resource()); });
@@ -129,7 +129,7 @@ void CTextInputV3Protocol::onGetTextInput(CZwpTextInputManagerV3* pMgr, uint32_t
     const auto CLIENT   = pMgr->client();
     const auto RESOURCE = m_vTextInputs.emplace_back(makeShared<CTextInputV3>(makeShared<CZwpTextInputV3>(CLIENT, pMgr->version(), id)));
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         m_vTextInputs.pop_back();
         LOGM(ERR, "Failed to create a tiv3 resource");

@@ -5,13 +5,11 @@
 #include <fstream>
 #include <chrono>
 #include <mutex>
-#include "../includes.hpp"
-#include "../helpers/MiscFunctions.hpp"
 
 #define LOGMESSAGESIZE   1024
 #define ROLLING_LOG_SIZE 4096
 
-enum LogLevel {
+enum eLogLevel : int8_t {
     NONE = -1,
     LOG  = 0,
     WARN,
@@ -21,6 +19,7 @@ enum LogLevel {
     TRACE
 };
 
+// NOLINTNEXTLINE(readability-identifier-naming)
 namespace Debug {
     inline std::string     logFile;
     inline std::ofstream   logOfs;
@@ -38,10 +37,11 @@ namespace Debug {
     void                   close();
 
     //
-    void log(LogLevel level, std::string str);
+    void log(eLogLevel level, std::string str);
 
     template <typename... Args>
-    void log(LogLevel level, std::format_string<Args...> fmt, Args&&... args) {
+    //NOLINTNEXTLINE
+    void log(eLogLevel level, std::format_string<Args...> fmt, Args&&... args) {
         std::lock_guard<std::mutex> guard(logMutex);
 
         if (level == TRACE && !trace)

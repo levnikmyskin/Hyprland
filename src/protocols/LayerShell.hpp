@@ -1,6 +1,5 @@
 #pragma once
 
-#include <memory>
 #include <vector>
 #include <cstdint>
 #include <tuple>
@@ -33,7 +32,7 @@ class CLayerShellResource {
     void configure(const Vector2D& size);
     void sendClosed();
 
-    enum eCommittedState {
+    enum eCommittedState : uint8_t {
         STATE_SIZE          = (1 << 0),
         STATE_ANCHOR        = (1 << 1),
         STATE_EXCLUSIVE     = (1 << 2),

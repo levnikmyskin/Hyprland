@@ -2,12 +2,10 @@
 
 #pragma once
 
-#include <memory>
 #include <vector>
 #include <cstdint>
 #include "WaylandProtocol.hpp"
 #include "pointer-constraints-unstable-v1.hpp"
-#include "../helpers/math/Math.hpp"
 #include "../helpers/math/Math.hpp"
 #include "../helpers/signal/Signal.hpp"
 

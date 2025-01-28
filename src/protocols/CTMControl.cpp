@@ -1,9 +1,13 @@
 #include "CTMControl.hpp"
 #include "../Compositor.hpp"
+#include "../render/Renderer.hpp"
 #include "core/Output.hpp"
+#include "../config/ConfigValue.hpp"
+#include "managers/AnimationManager.hpp"
+#include "../helpers/Monitor.hpp"
 
 CHyprlandCTMControlResource::CHyprlandCTMControlResource(SP<CHyprlandCtmControlManagerV1> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setDestroy([this](CHyprlandCtmControlManagerV1* pMgr) { PROTO::ctm->destroyResource(this); });
@@ -13,12 +17,12 @@ CHyprlandCTMControlResource::CHyprlandCTMControlResource(SP<CHyprlandCtmControlM
                                         wl_fixed_t mat5, wl_fixed_t mat6, wl_fixed_t mat7, wl_fixed_t mat8) {
         const auto OUTPUTRESOURCE = CWLOutputResource::fromResource(output);
 
-        if (!OUTPUTRESOURCE)
+        if UNLIKELY (!OUTPUTRESOURCE)
             return; // ?!
 
         const auto PMONITOR = OUTPUTRESOURCE->monitor.lock();
 
-        if (!PMONITOR)
+        if UNLIKELY (!PMONITOR)
             return; // ?!?!
 
         const std::array<float, 9> MAT = {wl_fixed_to_double(mat0), wl_fixed_to_double(mat1), wl_fixed_to_double(mat2), wl_fixed_to_double(mat3), wl_fixed_to_double(mat4),
@@ -68,7 +72,7 @@ void CHyprlandCTMControlProtocol::bindManager(wl_client* client, void* data, uin
 
     const auto RESOURCE = m_vManagers.emplace_back(makeShared<CHyprlandCTMControlResource>(makeShared<CHyprlandCtmControlManagerV1>(client, ver, id)));
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         wl_client_post_no_memory(client);
         m_vManagers.pop_back();
         return;
@@ -81,6 +85,63 @@ void CHyprlandCTMControlProtocol::destroyResource(CHyprlandCTMControlResource* r
     std::erase_if(m_vManagers, [&](const auto& other) { return other.get() == res; });
 }
 
+bool CHyprlandCTMControlProtocol::isCTMAnimationEnabled() {
+    static auto PENABLEANIM = CConfigValue<Hyprlang::INT>("render:ctm_animation");
+
+    if (*PENABLEANIM == 2)
+        return !g_pHyprRenderer->isNvidia();
+    return *PENABLEANIM;
+}
+
+CHyprlandCTMControlProtocol::SCTMData::SCTMData() {
+    g_pAnimationManager->createAnimation(0.f, progress, g_pConfigManager->getAnimationPropertyConfig("__internal_fadeCTM"), AVARDAMAGE_NONE);
+}
+
 void CHyprlandCTMControlProtocol::setCTM(PHLMONITOR monitor, const Mat3x3& ctm) {
-    monitor->setCTM(ctm);
+    if (!isCTMAnimationEnabled()) {
+        monitor->setCTM(ctm);
+        return;
+    }
+
+    std::erase_if(m_mCTMDatas, [](const auto& el) { return !el.first; });
+
+    if (!m_mCTMDatas.contains(monitor))
+        m_mCTMDatas[monitor] = makeUnique<SCTMData>();
+
+    auto& data = m_mCTMDatas.at(monitor);
+
+    data->ctmFrom = data->ctmTo;
+    data->ctmTo   = ctm;
+
+    data->progress->setValueAndWarp(0.F);
+    *data->progress = 1.F;
+
+    monitor->setCTM(data->ctmFrom);
+
+    data->progress->setUpdateCallback([monitor = PHLMONITORREF{monitor}, this](auto) {
+        if (!monitor || !m_mCTMDatas.contains(monitor))
+            return;
+        auto&                data     = m_mCTMDatas.at(monitor);
+        const auto           from     = data->ctmFrom.getMatrix();
+        const auto           to       = data->ctmTo.getMatrix();
+        const auto           PROGRESS = data->progress->getPercent();
+
+        static const auto    lerp = [](const float one, const float two, const float progress) -> float { return one + (two - one) * progress; };
+
+        std::array<float, 9> mtx;
+        for (size_t i = 0; i < 9; ++i) {
+            mtx[i] = lerp(from[i], to[i], PROGRESS);
+        }
+
+        monitor->setCTM(mtx);
+    });
+
+    data->progress->setCallbackOnEnd([monitor = PHLMONITORREF{monitor}, this](auto) {
+        if (!monitor || !m_mCTMDatas.contains(monitor)) {
+            monitor->setCTM(Mat3x3::identity());
+            return;
+        }
+        auto& data = m_mCTMDatas.at(monitor);
+        monitor->setCTM(data->ctmTo);
+    });
 }

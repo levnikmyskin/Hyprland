@@ -140,6 +140,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .data        = SConfigOptionDescription::SRangeData{0, 0, 20},
     },
     SConfigOptionDescription{
+        .value       = "decoration:rounding_power",
+        .description = "rouding power of corners (2 is a circle)",
+        .type        = CONFIG_OPTION_FLOAT,
+        .data        = SConfigOptionDescription::SFloatData{2, 2, 10},
+    },
+    SConfigOptionDescription{
         .value       = "decoration:active_opacity",
         .description = "opacity of active windows. [0.0 - 1.0]",
         .type        = CONFIG_OPTION_FLOAT,
@@ -327,6 +333,18 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
     },
     SConfigOptionDescription{
         .value       = "blur:popups_ignorealpha",
+        .description = "works like ignorealpha in layer rules. If pixel opacity is below set value, will not blur. [0.0 - 1.0]",
+        .type        = CONFIG_OPTION_FLOAT,
+        .data        = SConfigOptionDescription::SFloatData{0.2, 0, 1},
+    },
+    SConfigOptionDescription{
+        .value       = "blur:input_methods",
+        .description = "whether to blur input methods (e.g. fcitx5)",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "blur:input_methods_ignorealpha",
         .description = "works like ignorealpha in layer rules. If pixel opacity is below set value, will not blur. [0.0 - 1.0]",
         .type        = CONFIG_OPTION_FLOAT,
         .data        = SConfigOptionDescription::SFloatData{0.2, 0, 1},
@@ -1121,6 +1139,18 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
+    SConfigOptionDescription{
+        .value       = "misc:disable_hyprland_qtutils_check",
+        .description = "disable the warning if hyprland-qtutils is missing",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "misc:lockdead_screen_delay",
+        .description = "the delay in ms after the lockdead screen appears if the lock screen did not appear after a lock event occurred.",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{1000, 0, 5000},
+    },
 
     /*
      * binds:
@@ -1177,6 +1207,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .data        = SConfigOptionDescription::SBoolData{true},
     },
     SConfigOptionDescription{
+        .value       = "binds:movefocus_cycles_groupfirst",
+        .description = "If enabled, when in a grouped window, movefocus will cycle windows in the groups first, then at each ends of tabs, it'll move on to other windows/groups",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
         .value       = "binds:disable_keybind_grabbing",
         .description = "If enabled, apps that request keybinds to be disabled (e.g. VMs) will not be able to do so.",
         .type        = CONFIG_OPTION_BOOL,
@@ -1187,6 +1223,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .description = "If enabled, moving a window or focus over the edge of a monitor with a direction will move it to the next monitor in that direction.",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "binds:allow_pin_fullscreen",
+        .description = "Allows fullscreen to pinned windows, and restore their pinned status afterwards",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
     },
 
     /*
@@ -1253,6 +1295,30 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
+    SConfigOptionDescription{
+        .value       = "render:expand_undersized_textures",
+        .description = "Whether to expand textures that have not yet resized to be larger, or to just stretch them instead.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "render:xp_mode",
+        .description = "Disable back buffer and bottom layer rendering.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "render:ctm_animation",
+        .description = "Whether to enable a fade animation for CTM changes (hyprsunset). 2 means 'auto' (Yes on everything but Nvidia).",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{2, 0, 2},
+    },
+    SConfigOptionDescription{
+        .value       = "render:allow_early_buffer_release",
+        .description = "Allow early buffer release event. Fixes stuttering and missing frames for some apps. May cause graphical glitches and memory leaks in others",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
 
     /*
      * cursor:
@@ -1309,9 +1375,9 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
     },
     SConfigOptionDescription{
         .value       = "cursor:warp_on_change_workspace",
-        .description = "If true, move the cursor to the last focused window after changing the workspace.",
-        .type        = CONFIG_OPTION_BOOL,
-        .data        = SConfigOptionDescription::SBoolData{false},
+        .description = "Move the cursor to the last focused window after changing the workspace. Options: 0 (Disabled), 1 (Enabled), 2 (Force - ignores cursor:no_warps option)",
+        .type        = CONFIG_OPTION_CHOICE,
+        .data        = SConfigOptionDescription::SChoiceData{0, "Disabled,Enabled,Force"},
     },
     SConfigOptionDescription{
         .value       = "cursor:default_monitor",
@@ -1567,8 +1633,20 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .data        = SConfigOptionDescription::SBoolData{true},
     },
     SConfigOptionDescription{
-        .value       = "master:always_center_master",
-        .description = "when using orientation=center, keep the master window centered, even when it is the only window in the workspace.",
+        .value       = "master:slave_count_for_center_master",
+        .description = "when using orientation=center, make the master window centered only when at least this many slave windows are open. (Set 0 to always_center_master)",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{2, 0, 10}, //##TODO RANGE?
+    },
+    SConfigOptionDescription{
+        .value       = "master:center_master_slaves_on_right",
+        .description = "set if the slaves should appear on right of master when slave_count_for_center_master > 2",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "master:center_ignores_reserved",
+        .description = "centers the master window on monitor ignoring reserved areas",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
@@ -1585,5 +1663,23 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
                        "top/bottom of the stack depending on new_on_top.",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "experimental:wide_color_gamut",
+        .description = "force wide color gamut for all supported outputs",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "experimental:hdr",
+        .description = "force static hdr for all supported outputs",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "experimental:xx_color_management_v4",
+        .description = "enable color management protocol",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
     },
 };

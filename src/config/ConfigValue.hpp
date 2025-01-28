@@ -3,7 +3,6 @@
 #include <string>
 #include <typeindex>
 #include <hyprlang.hpp>
-#include "../debug/Log.hpp"
 #include "../macros.hpp"
 #include "ConfigManager.hpp"
 
@@ -13,6 +12,7 @@ class CConfigValue {
     CConfigValue(const std::string& val) {
         const auto PVHYPRLANG = g_pConfigManager->getHyprlangConfigValuePtr(val);
 
+        // NOLINTNEXTLINE
         p_ = PVHYPRLANG->getDataStaticPtr();
 
 #ifdef HYPRLAND_DEBUG

@@ -4,6 +4,8 @@
 #include "../protocols/FractionalScale.hpp"
 #include "../protocols/SessionLock.hpp"
 #include "../managers/SeatManager.hpp"
+#include "../render/Renderer.hpp"
+#include "../managers/input/InputManager.hpp"
 #include <algorithm>
 #include <ranges>
 
@@ -31,7 +33,7 @@ SSessionLockSurface::SSessionLockSurface(SP<CSessionLockSurface> surface_) : sur
     listeners.commit = surface_->events.commit.registerListener([this](std::any data) {
         const auto PMONITOR = g_pCompositor->getMonitorFromID(iMonitorID);
 
-        if (mapped && pWlrSurface != g_pCompositor->m_pLastFocus)
+        if (mapped && !g_pCompositor->m_pLastFocus)
             g_pInputManager->simulateMouseMovement();
 
         if (PMONITOR)
@@ -55,15 +57,16 @@ void CSessionLockManager::onNewSessionLock(SP<CSessionLock> pLock) {
 
     Debug::log(LOG, "Session got locked by {:x}", (uintptr_t)pLock.get());
 
-    m_pSessionLock       = std::make_unique<SSessionLock>();
+    m_pSessionLock       = makeUnique<SSessionLock>();
     m_pSessionLock->lock = pLock;
+    m_pSessionLock->mLockTimer.reset();
 
     m_pSessionLock->listeners.newSurface = pLock->events.newLockSurface.registerListener([this](std::any data) {
         auto       SURFACE = std::any_cast<SP<CSessionLockSurface>>(data);
 
         const auto PMONITOR = SURFACE->monitor();
 
-        const auto NEWSURFACE  = m_pSessionLock->vSessionLockSurfaces.emplace_back(std::make_unique<SSessionLockSurface>(SURFACE)).get();
+        const auto NEWSURFACE  = m_pSessionLock->vSessionLockSurfaces.emplace_back(makeUnique<SSessionLockSurface>(SURFACE)).get();
         NEWSURFACE->iMonitorID = PMONITOR->ID;
         PROTO::fractional->sendScale(SURFACE->surface(), PMONITOR->scale);
     });
@@ -92,20 +95,20 @@ bool CSessionLockManager::isSessionLocked() {
     return PROTO::sessionLock->isLocked();
 }
 
-SSessionLockSurface* CSessionLockManager::getSessionLockSurfaceForMonitor(uint64_t id) {
+WP<SSessionLockSurface> CSessionLockManager::getSessionLockSurfaceForMonitor(uint64_t id) {
     if (!m_pSessionLock)
-        return nullptr;
+        return {};
 
     for (auto const& sls : m_pSessionLock->vSessionLockSurfaces) {
         if (sls->iMonitorID == id) {
             if (sls->mapped)
-                return sls.get();
+                return sls;
             else
-                return nullptr;
+                return {};
         }
     }
 
-    return nullptr;
+    return {};
 }
 
 // We don't want the red screen to flash.
@@ -175,4 +178,13 @@ bool CSessionLockManager::isSessionLockPresent() {
 
 bool CSessionLockManager::anySessionLockSurfacesPresent() {
     return m_pSessionLock && std::ranges::any_of(m_pSessionLock->vSessionLockSurfaces, [](const auto& surf) { return surf->mapped; });
+}
+
+bool CSessionLockManager::shallConsiderLockMissing() {
+    if (!m_pSessionLock)
+        return false;
+
+    static auto LOCKDEAD_SCREEN_DELAY = CConfigValue<Hyprlang::INT>("misc:lockdead_screen_delay");
+
+    return m_pSessionLock->mLockTimer.getMillis() > *LOCKDEAD_SCREEN_DELAY;
 }

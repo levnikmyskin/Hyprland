@@ -11,7 +11,7 @@ CXDataSource::CXDataSource(SXSelection& sel_) : selection(sel_) {
                                                         1, // delete
                                                         selection.window, HYPRATOMS["_WL_SELECTION"], XCB_GET_PROPERTY_TYPE_ANY, 0, 4096);
 
-    xcb_get_property_reply_t* reply = xcb_get_property_reply(g_pXWayland->pWM->connection, cookie, NULL);
+    xcb_get_property_reply_t* reply = xcb_get_property_reply(g_pXWayland->pWM->connection, cookie, nullptr);
     if (!reply)
         return;
 
@@ -23,9 +23,9 @@ CXDataSource::CXDataSource(SXSelection& sel_) : selection(sel_) {
     auto value = (xcb_atom_t*)xcb_get_property_value(reply);
     for (uint32_t i = 0; i < reply->value_len; i++) {
         if (value[i] == HYPRATOMS["UTF8_STRING"])
-            mimeTypes.push_back("text/plain;charset=utf-8");
+            mimeTypes.emplace_back("text/plain;charset=utf-8");
         else if (value[i] == HYPRATOMS["TEXT"])
-            mimeTypes.push_back("text/plain");
+            mimeTypes.emplace_back("text/plain");
         else if (value[i] != HYPRATOMS["TARGETS"] && value[i] != HYPRATOMS["TIMESTAMP"]) {
 
             auto type = g_pXWayland->pWM->mimeFromAtom(value[i]);
@@ -34,7 +34,8 @@ CXDataSource::CXDataSource(SXSelection& sel_) : selection(sel_) {
                 continue;
 
             mimeTypes.push_back(type);
-        }
+        } else
+            continue;
 
         mimeAtoms.push_back(value[i]);
     }
@@ -70,7 +71,7 @@ void CXDataSource::send(const std::string& mime, uint32_t fd) {
 
     Debug::log(LOG, "[XDataSource] send with mime {} to fd {}", mime, fd);
 
-    selection.transfer                 = std::make_unique<SXTransfer>(selection);
+    selection.transfer                 = makeUnique<SXTransfer>(selection);
     selection.transfer->incomingWindow = xcb_generate_id(g_pXWayland->pWM->connection);
     const uint32_t MASK                = XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY | XCB_EVENT_MASK_PROPERTY_CHANGE;
     xcb_create_window(g_pXWayland->pWM->connection, XCB_COPY_FROM_PARENT, selection.transfer->incomingWindow, g_pXWayland->pWM->screen->root, 0, 0, 10, 10, 0,

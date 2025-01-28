@@ -2,9 +2,10 @@
 #include "../../Compositor.hpp"
 #include "../../protocols/IdleInhibit.hpp"
 #include "../../protocols/IdleNotify.hpp"
+#include "../../protocols/core/Compositor.hpp"
 
 void CInputManager::newIdleInhibitor(std::any inhibitor) {
-    const auto PINHIBIT = m_vIdleInhibitors.emplace_back(std::make_unique<SIdleInhibitor>()).get();
+    const auto PINHIBIT = m_vIdleInhibitors.emplace_back(makeUnique<SIdleInhibitor>()).get();
     PINHIBIT->inhibitor = std::any_cast<SP<CIdleInhibitor>>(inhibitor);
 
     Debug::log(LOG, "New idle inhibitor registered for surface {:x}", (uintptr_t)PINHIBIT->inhibitor->surface.get());
@@ -50,25 +51,51 @@ void CInputManager::recheckIdleInhibitorStatus() {
 
     // check manual user-set inhibitors
     for (auto const& w : g_pCompositor->m_vWindows) {
-        if (w->m_eIdleInhibitMode == IDLEINHIBIT_NONE)
-            continue;
-
-        if (w->m_eIdleInhibitMode == IDLEINHIBIT_ALWAYS) {
-            PROTO::idle->setInhibit(true);
-            return;
-        }
-
-        if (w->m_eIdleInhibitMode == IDLEINHIBIT_FOCUS && g_pCompositor->isWindowActive(w)) {
-            PROTO::idle->setInhibit(true);
-            return;
-        }
-
-        if (w->m_eIdleInhibitMode == IDLEINHIBIT_FULLSCREEN && w->isFullscreen() && g_pCompositor->isWorkspaceVisible(w->m_pWorkspace)) {
+        if (isWindowInhibiting(w)) {
             PROTO::idle->setInhibit(true);
             return;
         }
     }
 
     PROTO::idle->setInhibit(false);
-    return;
+}
+
+bool CInputManager::isWindowInhibiting(const PHLWINDOW& w, bool onlyHl) {
+    if (w->m_eIdleInhibitMode == IDLEINHIBIT_ALWAYS)
+        return true;
+
+    if (w->m_eIdleInhibitMode == IDLEINHIBIT_FOCUS && g_pCompositor->isWindowActive(w))
+        return true;
+
+    if (w->m_eIdleInhibitMode == IDLEINHIBIT_FULLSCREEN && w->isFullscreen() && w->m_pWorkspace && w->m_pWorkspace->isVisible())
+        return true;
+
+    if (onlyHl)
+        return false;
+
+    for (auto const& ii : m_vIdleInhibitors) {
+        if (ii->nonDesktop || !ii->inhibitor)
+            continue;
+
+        bool isInhibiting = false;
+        w->m_pWLSurface->resource()->breadthfirst(
+            [&ii](SP<CWLSurfaceResource> surf, const Vector2D& pos, void* data) {
+                if (ii->inhibitor->surface != surf)
+                    return;
+
+                auto WLSurface = CWLSurface::fromResource(surf);
+
+                if (!WLSurface)
+                    return;
+
+                if (WLSurface->visible())
+                    *(bool*)data = true;
+            },
+            &isInhibiting);
+
+        if (isInhibiting)
+            return true;
+    }
+
+    return false;
 }

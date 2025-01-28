@@ -1,6 +1,5 @@
 #include "TextInputV1.hpp"
 
-#include "../Compositor.hpp"
 #include "core/Compositor.hpp"
 
 CTextInputV1::~CTextInputV1() {
@@ -8,13 +7,13 @@ CTextInputV1::~CTextInputV1() {
 }
 
 CTextInputV1::CTextInputV1(SP<CZwpTextInputV1> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setOnDestroy([this](CZwpTextInputV1* pMgr) { PROTO::textInputV1->destroyResource(this); });
 
     resource->setActivate([this](CZwpTextInputV1* pMgr, wl_resource* seat, wl_resource* surface) {
-        if (!surface) {
+        if UNLIKELY (!surface) {
             LOGM(WARN, "Text-input-v1 PTI{:x}: No surface to activate text input on!", (uintptr_t)this);
             return;
         }
@@ -50,10 +49,10 @@ CTextInputV1::CTextInputV1(SP<CZwpTextInputV1> resource_) : resource(resource_) 
     });
 
     // nothing
-    resource->setShowInputPanel([this](CZwpTextInputV1* pMgr) {});
-    resource->setHideInputPanel([this](CZwpTextInputV1* pMgr) {});
-    resource->setSetPreferredLanguage([this](CZwpTextInputV1* pMgr, const char* language) {});
-    resource->setInvokeAction([this](CZwpTextInputV1* pMgr, uint32_t button, uint32_t index) {});
+    resource->setShowInputPanel([](CZwpTextInputV1* pMgr) {});
+    resource->setHideInputPanel([](CZwpTextInputV1* pMgr) {});
+    resource->setSetPreferredLanguage([](CZwpTextInputV1* pMgr, const char* language) {});
+    resource->setInvokeAction([](CZwpTextInputV1* pMgr, uint32_t button, uint32_t index) {});
 }
 
 bool CTextInputV1::good() {
@@ -101,12 +100,12 @@ CTextInputV1Protocol::CTextInputV1Protocol(const wl_interface* iface, const int&
 void CTextInputV1Protocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
     const auto RESOURCE = m_vManagers.emplace_back(makeShared<CZwpTextInputManagerV1>(client, ver, id));
 
-    RESOURCE->setOnDestroy([this](CZwpTextInputManagerV1* pMgr) { PROTO::textInputV1->destroyResource(pMgr); });
+    RESOURCE->setOnDestroy([](CZwpTextInputManagerV1* pMgr) { PROTO::textInputV1->destroyResource(pMgr); });
     RESOURCE->setCreateTextInput([this](CZwpTextInputManagerV1* pMgr, uint32_t id) {
         const auto PTI = m_vClients.emplace_back(makeShared<CTextInputV1>(makeShared<CZwpTextInputV1>(pMgr->client(), pMgr->version(), id)));
         LOGM(LOG, "New TI V1 at {:x}", (uintptr_t)PTI.get());
 
-        if (!PTI->good()) {
+        if UNLIKELY (!PTI->good()) {
             LOGM(ERR, "Could not alloc wl_resource for TIV1");
             pMgr->noMemory();
             PROTO::textInputV1->destroyResource(PTI.get());

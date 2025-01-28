@@ -2,13 +2,16 @@
 #include "HyprError.hpp"
 #include "../Compositor.hpp"
 #include "../config/ConfigValue.hpp"
+#include "../render/pass/TexPassElement.hpp"
+#include "../managers/AnimationManager.hpp"
+#include "../render/Renderer.hpp"
+#include "../managers/HookSystemManager.hpp"
 
 #include <hyprutils/utils/ScopeGuard.hpp>
-using namespace Hyprutils::Utils;
+using namespace Hyprutils::Animation;
 
 CHyprError::CHyprError() {
-    m_fFadeOpacity.create(AVARTYPE_FLOAT, g_pConfigManager->getAnimationPropertyConfig("fadeIn"), AVARDAMAGE_NONE);
-    m_fFadeOpacity.registerVar();
+    g_pAnimationManager->createAnimation(0.f, m_fFadeOpacity, g_pConfigManager->getAnimationPropertyConfig("fadeIn"), AVARDAMAGE_NONE);
 
     static auto P = g_pHookSystem->hookDynamic("focusedMon", [&](void* self, SCallbackInfo& info, std::any param) {
         if (!m_bIsCreated)
@@ -22,18 +25,16 @@ CHyprError::CHyprError() {
         if (!m_bIsCreated)
             return;
 
-        if (m_fFadeOpacity.isBeingAnimated() || m_bMonitorChanged)
-            g_pHyprRenderer->damageBox(&m_bDamageBox);
+        if (m_fFadeOpacity->isBeingAnimated() || m_bMonitorChanged)
+            g_pHyprRenderer->damageBox(m_bDamageBox);
     });
 
     m_pTexture = makeShared<CTexture>();
 }
 
-CHyprError::~CHyprError() {
-    m_fFadeOpacity.unregister();
-}
+CHyprError::~CHyprError() = default;
 
-void CHyprError::queueCreate(std::string message, const CColor& color) {
+void CHyprError::queueCreate(std::string message, const CHyprColor& color) {
     m_szQueued = message;
     m_cQueued  = color;
 }
@@ -42,10 +43,10 @@ void CHyprError::createQueued() {
     if (m_bIsCreated)
         m_pTexture->destroyTexture();
 
-    m_fFadeOpacity.setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeIn"));
+    m_fFadeOpacity->setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeIn"));
 
-    m_fFadeOpacity.setValueAndWarp(0.f);
-    m_fFadeOpacity = 1.f;
+    m_fFadeOpacity->setValueAndWarp(0.f);
+    *m_fFadeOpacity = 1.f;
 
     const auto PMONITOR = g_pCompositor->m_vMonitors.front();
 
@@ -98,7 +99,7 @@ void CHyprError::createQueued() {
     cairo_stroke(CAIRO);
 
     // draw the text with a common font
-    const CColor textColor = CColor(0.9, 0.9, 0.9, 1.0);
+    const CHyprColor textColor = CHyprColor(0.9, 0.9, 0.9, 1.0);
     cairo_set_source_rgba(CAIRO, textColor.r, textColor.g, textColor.b, textColor.a);
 
     static auto           fontFamily = CConfigValue<std::string>("misc:font_family");
@@ -160,7 +161,7 @@ void CHyprError::createQueued() {
 
     m_bIsCreated = true;
     m_szQueued   = "";
-    m_cQueued    = CColor();
+    m_cQueued    = CHyprColor();
 
     g_pHyprRenderer->damageMonitor(PMONITOR);
 
@@ -175,8 +176,8 @@ void CHyprError::draw() {
     }
 
     if (m_bQueuedDestroy) {
-        if (!m_fFadeOpacity.isBeingAnimated()) {
-            if (m_fFadeOpacity.value() == 0.f) {
+        if (!m_fFadeOpacity->isBeingAnimated()) {
+            if (m_fFadeOpacity->value() == 0.f) {
                 m_bQueuedDestroy = false;
                 m_pTexture->destroyTexture();
                 m_bIsCreated = false;
@@ -188,8 +189,8 @@ void CHyprError::draw() {
 
                 return;
             } else {
-                m_fFadeOpacity.setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeOut"));
-                m_fFadeOpacity = 0.f;
+                m_fFadeOpacity->setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeOut"));
+                *m_fFadeOpacity = 0.f;
             }
         }
     }
@@ -201,12 +202,17 @@ void CHyprError::draw() {
     m_bDamageBox.x = (int)PMONITOR->vecPosition.x;
     m_bDamageBox.y = (int)PMONITOR->vecPosition.y;
 
-    if (m_fFadeOpacity.isBeingAnimated() || m_bMonitorChanged)
-        g_pHyprRenderer->damageBox(&m_bDamageBox);
+    if (m_fFadeOpacity->isBeingAnimated() || m_bMonitorChanged)
+        g_pHyprRenderer->damageBox(m_bDamageBox);
 
     m_bMonitorChanged = false;
 
-    g_pHyprOpenGL->renderTexture(m_pTexture, &monbox, m_fFadeOpacity.value(), 0);
+    CTexPassElement::SRenderData data;
+    data.tex = m_pTexture;
+    data.box = monbox;
+    data.a   = m_fFadeOpacity->value();
+
+    g_pHyprRenderer->m_sRenderPass.add(makeShared<CTexPassElement>(data));
 }
 
 void CHyprError::destroy() {

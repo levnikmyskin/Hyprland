@@ -3,6 +3,7 @@
 #include "../config/ConfigValue.hpp"
 #include "PointerManager.hpp"
 #include "../xwayland/XWayland.hpp"
+#include "../managers/HookSystemManager.hpp"
 
 static int cursorAnimTimer(SP<CEventLoopTimer> self, void* data) {
     const auto cursorMgr = reinterpret_cast<CCursorManager*>(data);
@@ -17,16 +18,12 @@ static void hcLogger(enum eHyprcursorLogLevel level, char* message) {
     Debug::log(NONE, "[hc] {}", message);
 }
 
-CCursorBuffer::CCursorBuffer(cairo_surface_t* surf, const Vector2D& size_, const Vector2D& hot_) : hotspot(hot_) {
-    surface = surf;
-    size    = size_;
-    stride  = cairo_image_surface_get_stride(surf);
+CCursorBuffer::CCursorBuffer(cairo_surface_t* surf, const Vector2D& size_, const Vector2D& hot_) : hotspot(hot_), surface(surf), stride(cairo_image_surface_get_stride(surf)) {
+    size = size_;
 }
 
-CCursorBuffer::CCursorBuffer(uint8_t* pixelData_, const Vector2D& size_, const Vector2D& hot_) : hotspot(hot_) {
-    pixelData = pixelData_;
-    size      = size_;
-    stride    = 4 * size_.x;
+CCursorBuffer::CCursorBuffer(uint8_t* pixelData_, const Vector2D& size_, const Vector2D& hot_) : hotspot(hot_), pixelData(pixelData_), stride(4 * size_.x) {
+    size = size_;
 }
 
 Aquamarine::eBufferCapability CCursorBuffer::caps() {
@@ -67,8 +64,8 @@ void CCursorBuffer::endDataPtr() {
 }
 
 CCursorManager::CCursorManager() {
-    m_pHyprcursor              = std::make_unique<Hyprcursor::CHyprcursorManager>(m_szTheme.empty() ? nullptr : m_szTheme.c_str(), hcLogger);
-    m_pXcursor                 = std::make_unique<CXCursorManager>();
+    m_pHyprcursor              = makeUnique<Hyprcursor::CHyprcursorManager>(m_szTheme.empty() ? nullptr : m_szTheme.c_str(), hcLogger);
+    m_pXcursor                 = makeUnique<CXCursorManager>();
     static auto PUSEHYPRCURSOR = CConfigValue<Hyprlang::INT>("cursor:enable_hyprcursor");
 
     if (m_pHyprcursor->valid() && *PUSEHYPRCURSOR) {
@@ -326,7 +323,7 @@ bool CCursorManager::changeTheme(const std::string& name, const int size) {
         m_szTheme                    = name.empty() ? "" : name;
         m_iSize                      = size;
 
-        m_pHyprcursor = std::make_unique<Hyprcursor::CHyprcursorManager>(m_szTheme.empty() ? nullptr : m_szTheme.c_str(), options);
+        m_pHyprcursor = makeUnique<Hyprcursor::CHyprcursorManager>(m_szTheme.empty() ? nullptr : m_szTheme.c_str(), options);
         if (!m_pHyprcursor->valid()) {
             Debug::log(ERR, "Hyprcursor failed loading theme \"{}\", falling back to XCursor.", m_szTheme);
             m_pXcursor->loadTheme(m_szTheme.empty() ? xcursor_theme : m_szTheme, m_iSize, m_fCursorScale);

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <memory>
 #include <vector>
 #include <cstdint>
 #include <optional>
@@ -99,6 +98,9 @@ class CXDGToplevelResource {
 
     bool                            good();
 
+    Vector2D                        layoutMinSize();
+    Vector2D                        layoutMaxSize();
+
     // schedule a configure event
     uint32_t setSize(const Vector2D& size);
     uint32_t setMaximized(bool maximized);
@@ -120,9 +122,10 @@ class CXDGToplevelResource {
         std::string appid;
 
         // volatile state: is reset after the stateChanged signal fires
-        std::optional<bool> requestsMaximize;
-        std::optional<bool> requestsFullscreen;
-        std::optional<bool> requestsMinimize;
+        std::optional<bool>      requestsMaximize;
+        std::optional<bool>      requestsFullscreen;
+        std::optional<MONITORID> requestsFullscreenMonitor;
+        std::optional<bool>      requestsMinimize;
     } state;
 
     struct {

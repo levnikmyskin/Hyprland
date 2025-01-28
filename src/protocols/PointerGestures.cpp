@@ -1,11 +1,10 @@
 #include "PointerGestures.hpp"
-#include "../Compositor.hpp"
 #include "../managers/SeatManager.hpp"
 #include "core/Seat.hpp"
 #include "core/Compositor.hpp"
 
 CPointerGestureSwipe::CPointerGestureSwipe(SP<CZwpPointerGestureSwipeV1> resource_) : resource(resource_) {
-    if (!resource->resource())
+    if UNLIKELY (!resource->resource())
         return;
 
     resource->setOnDestroy([this](CZwpPointerGestureSwipeV1* p) { PROTO::pointerGestures->onGestureDestroy(this); });
@@ -17,7 +16,7 @@ bool CPointerGestureSwipe::good() {
 }
 
 CPointerGestureHold::CPointerGestureHold(SP<CZwpPointerGestureHoldV1> resource_) : resource(resource_) {
-    if (!resource->resource())
+    if UNLIKELY (!resource->resource())
         return;
 
     resource->setOnDestroy([this](CZwpPointerGestureHoldV1* p) { PROTO::pointerGestures->onGestureDestroy(this); });
@@ -29,7 +28,7 @@ bool CPointerGestureHold::good() {
 }
 
 CPointerGesturePinch::CPointerGesturePinch(SP<CZwpPointerGesturePinchV1> resource_) : resource(resource_) {
-    if (!resource->resource())
+    if UNLIKELY (!resource->resource())
         return;
 
     resource->setOnDestroy([this](CZwpPointerGesturePinchV1* p) { PROTO::pointerGestures->onGestureDestroy(this); });
@@ -45,7 +44,7 @@ CPointerGesturesProtocol::CPointerGesturesProtocol(const wl_interface* iface, co
 }
 
 void CPointerGesturesProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CZwpPointerGesturesV1>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CZwpPointerGesturesV1>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CZwpPointerGesturesV1* p) { this->onManagerResourceDestroy(p->resource()); });
     RESOURCE->setRelease([this](CZwpPointerGesturesV1* pMgr) { this->onManagerResourceDestroy(pMgr->resource()); });
 
@@ -72,9 +71,9 @@ void CPointerGesturesProtocol::onGestureDestroy(CPointerGestureHold* gesture) {
 
 void CPointerGesturesProtocol::onGetPinchGesture(CZwpPointerGesturesV1* pMgr, uint32_t id, wl_resource* pointer) {
     const auto CLIENT   = pMgr->client();
-    const auto RESOURCE = m_vPinches.emplace_back(std::make_unique<CPointerGesturePinch>(makeShared<CZwpPointerGesturePinchV1>(CLIENT, pMgr->version(), id))).get();
+    const auto RESOURCE = m_vPinches.emplace_back(makeUnique<CPointerGesturePinch>(makeShared<CZwpPointerGesturePinchV1>(CLIENT, pMgr->version(), id))).get();
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         LOGM(ERR, "Couldn't create gesture");
         return;
@@ -83,9 +82,9 @@ void CPointerGesturesProtocol::onGetPinchGesture(CZwpPointerGesturesV1* pMgr, ui
 
 void CPointerGesturesProtocol::onGetSwipeGesture(CZwpPointerGesturesV1* pMgr, uint32_t id, wl_resource* pointer) {
     const auto CLIENT   = pMgr->client();
-    const auto RESOURCE = m_vSwipes.emplace_back(std::make_unique<CPointerGestureSwipe>(makeShared<CZwpPointerGestureSwipeV1>(CLIENT, pMgr->version(), id))).get();
+    const auto RESOURCE = m_vSwipes.emplace_back(makeUnique<CPointerGestureSwipe>(makeShared<CZwpPointerGestureSwipeV1>(CLIENT, pMgr->version(), id))).get();
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         LOGM(ERR, "Couldn't create gesture");
         return;
@@ -94,9 +93,9 @@ void CPointerGesturesProtocol::onGetSwipeGesture(CZwpPointerGesturesV1* pMgr, ui
 
 void CPointerGesturesProtocol::onGetHoldGesture(CZwpPointerGesturesV1* pMgr, uint32_t id, wl_resource* pointer) {
     const auto CLIENT   = pMgr->client();
-    const auto RESOURCE = m_vHolds.emplace_back(std::make_unique<CPointerGestureHold>(makeShared<CZwpPointerGestureHoldV1>(CLIENT, pMgr->version(), id))).get();
+    const auto RESOURCE = m_vHolds.emplace_back(makeUnique<CPointerGestureHold>(makeShared<CZwpPointerGestureHoldV1>(CLIENT, pMgr->version(), id))).get();
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         LOGM(ERR, "Couldn't create gesture");
         return;

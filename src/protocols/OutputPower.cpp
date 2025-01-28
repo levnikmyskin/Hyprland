@@ -1,9 +1,9 @@
 #include "OutputPower.hpp"
-#include "../Compositor.hpp"
 #include "core/Output.hpp"
+#include "../helpers/Monitor.hpp"
 
 COutputPower::COutputPower(SP<CZwlrOutputPowerV1> resource_, PHLMONITOR pMonitor_) : resource(resource_), pMonitor(pMonitor_) {
-    if (!resource->resource())
+    if UNLIKELY (!resource->resource())
         return;
 
     resource->setDestroy([this](CZwlrOutputPowerV1* r) { PROTO::outputPower->destroyOutputPower(this); });
@@ -43,7 +43,7 @@ COutputPowerProtocol::COutputPowerProtocol(const wl_interface* iface, const int&
 }
 
 void COutputPowerProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CZwlrOutputPowerManagerV1>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CZwlrOutputPowerManagerV1>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CZwlrOutputPowerManagerV1* p) { this->onManagerResourceDestroy(p->resource()); });
 
     RESOURCE->setDestroy([this](CZwlrOutputPowerManagerV1* pMgr) { this->onManagerResourceDestroy(pMgr->resource()); });
@@ -62,15 +62,15 @@ void COutputPowerProtocol::onGetOutputPower(CZwlrOutputPowerManagerV1* pMgr, uin
 
     const auto OUTPUT = CWLOutputResource::fromResource(output);
 
-    if (!OUTPUT) {
+    if UNLIKELY (!OUTPUT) {
         pMgr->error(0, "Invalid output resource");
         return;
     }
 
     const auto CLIENT   = pMgr->client();
-    const auto RESOURCE = m_vOutputPowers.emplace_back(std::make_unique<COutputPower>(makeShared<CZwlrOutputPowerV1>(CLIENT, pMgr->version(), id), OUTPUT->monitor.lock())).get();
+    const auto RESOURCE = m_vOutputPowers.emplace_back(makeUnique<COutputPower>(makeShared<CZwlrOutputPowerV1>(CLIENT, pMgr->version(), id), OUTPUT->monitor.lock())).get();
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         m_vOutputPowers.pop_back();
         return;

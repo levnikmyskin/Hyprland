@@ -4,11 +4,18 @@
 #include "../protocols/LayerShell.hpp"
 #include "../protocols/core/Compositor.hpp"
 #include "../managers/SeatManager.hpp"
+#include "../managers/AnimationManager.hpp"
+#include "../render/Renderer.hpp"
+#include "../config/ConfigManager.hpp"
+#include "../helpers/Monitor.hpp"
+#include "../managers/input/InputManager.hpp"
+#include "../managers/HookSystemManager.hpp"
+#include "../managers/EventManager.hpp"
 
 PHLLS CLayerSurface::create(SP<CLayerShellResource> resource) {
     PHLLS pLS = SP<CLayerSurface>(new CLayerSurface(resource));
 
-    auto  pMonitor = resource->monitor.empty() ? g_pCompositor->getMonitorFromCursor() : g_pCompositor->getMonitorFromName(resource->monitor);
+    auto  pMonitor = resource->monitor.empty() ? g_pCompositor->m_pLastMonitor.lock() : g_pCompositor->getMonitorFromName(resource->monitor);
 
     pLS->surface->assign(resource->surface.lock(), pLS);
 
@@ -24,23 +31,21 @@ PHLLS CLayerSurface::create(SP<CLayerShellResource> resource) {
 
     pLS->szNamespace = resource->layerNamespace;
 
-    pLS->layer     = resource->current.layer;
-    pLS->popupHead = std::make_unique<CPopup>(pLS);
-    pLS->monitor   = pMonitor;
+    pLS->layer              = resource->current.layer;
+    pLS->popupHead          = makeUnique<CPopup>(pLS);
+    pLS->popupHead->m_pSelf = pLS->popupHead;
+    pLS->monitor            = pMonitor;
     pMonitor->m_aLayerSurfaceLayers[resource->current.layer].emplace_back(pLS);
 
     pLS->forceBlur = g_pConfigManager->shouldBlurLS(pLS->szNamespace);
 
-    pLS->alpha.create(g_pConfigManager->getAnimationPropertyConfig("fadeLayersIn"), pLS, AVARDAMAGE_ENTIRE);
-    pLS->realPosition.create(g_pConfigManager->getAnimationPropertyConfig("layersIn"), pLS, AVARDAMAGE_ENTIRE);
-    pLS->realSize.create(g_pConfigManager->getAnimationPropertyConfig("layersIn"), pLS, AVARDAMAGE_ENTIRE);
-    pLS->alpha.registerVar();
-    pLS->realPosition.registerVar();
-    pLS->realSize.registerVar();
+    g_pAnimationManager->createAnimation(0.f, pLS->alpha, g_pConfigManager->getAnimationPropertyConfig("fadeLayersIn"), pLS, AVARDAMAGE_ENTIRE);
+    g_pAnimationManager->createAnimation(Vector2D(0, 0), pLS->realPosition, g_pConfigManager->getAnimationPropertyConfig("layersIn"), pLS, AVARDAMAGE_ENTIRE);
+    g_pAnimationManager->createAnimation(Vector2D(0, 0), pLS->realSize, g_pConfigManager->getAnimationPropertyConfig("layersIn"), pLS, AVARDAMAGE_ENTIRE);
 
     pLS->registerCallbacks();
 
-    pLS->alpha.setValueAndWarp(0.f);
+    pLS->alpha->setValueAndWarp(0.f);
 
     Debug::log(LOG, "LayerSurface {:x} (namespace {} layer {}) created on monitor {}", (uintptr_t)resource.get(), resource->layerNamespace, (int)pLS->layer, pMonitor->szName);
 
@@ -48,7 +53,7 @@ PHLLS CLayerSurface::create(SP<CLayerShellResource> resource) {
 }
 
 void CLayerSurface::registerCallbacks() {
-    alpha.setUpdateCallback([this](void*) {
+    alpha->setUpdateCallback([this](auto) {
         if (dimAround)
             g_pHyprRenderer->damageMonitor(monitor.lock());
     });
@@ -93,7 +98,7 @@ void CLayerSurface::onDestroy() {
             onUnmap();
         } else {
             Debug::log(LOG, "Removing LayerSurface that wasn't mapped.");
-            alpha.setValueAndWarp(0.f);
+            alpha->setValueAndWarp(0.f);
             fadingOut = true;
             g_pCompositor->addToFadingOutSafe(self.lock());
         }
@@ -110,7 +115,7 @@ void CLayerSurface::onDestroy() {
 
         // and damage
         CBox geomFixed = {geometry.x + PMONITOR->vecPosition.x, geometry.y + PMONITOR->vecPosition.y, geometry.width, geometry.height};
-        g_pHyprRenderer->damageBox(&geomFixed);
+        g_pHyprRenderer->damageBox(geomFixed);
     }
 
     readyToDelete = true;
@@ -174,7 +179,7 @@ void CLayerSurface::onMap() {
     position = Vector2D(geometry.x, geometry.y);
 
     CBox geomFixed = {geometry.x + PMONITOR->vecPosition.x, geometry.y + PMONITOR->vecPosition.y, geometry.width, geometry.height};
-    g_pHyprRenderer->damageBox(&geomFixed);
+    g_pHyprRenderer->damageBox(geomFixed);
     const bool FULLSCREEN = PMONITOR->activeWorkspace && PMONITOR->activeWorkspace->m_bHasFullscreenWindow && PMONITOR->activeWorkspace->m_efFullscreenMode == FSMODE_FULLSCREEN;
 
     startAnimation(!(layer == ZWLR_LAYER_SHELL_V1_LAYER_TOP && FULLSCREEN && !GRABSFOCUS));
@@ -210,7 +215,7 @@ void CLayerSurface::onUnmap() {
     }
 
     // make a snapshot and start fade
-    g_pHyprOpenGL->makeLayerSnapshot(self.lock());
+    g_pHyprRenderer->makeLayerSnapshot(self.lock());
 
     startAnimation(false);
 
@@ -235,13 +240,13 @@ void CLayerSurface::onUnmap() {
         g_pSeatManager->setKeyboardFocus(g_pCompositor->m_pLastFocus.lock());
 
     CBox geomFixed = {geometry.x + PMONITOR->vecPosition.x, geometry.y + PMONITOR->vecPosition.y, geometry.width, geometry.height};
-    g_pHyprRenderer->damageBox(&geomFixed);
+    g_pHyprRenderer->damageBox(geomFixed);
 
     geomFixed = {geometry.x + (int)PMONITOR->vecPosition.x, geometry.y + (int)PMONITOR->vecPosition.y, (int)layerSurface->surface->current.size.x,
                  (int)layerSurface->surface->current.size.y};
-    g_pHyprRenderer->damageBox(&geomFixed);
+    g_pHyprRenderer->damageBox(geomFixed);
 
-    g_pInputManager->sendMotionEventsToFocused();
+    g_pInputManager->simulateMouseMovement();
 
     g_pHyprRenderer->arrangeLayersForMonitor(PMONITOR->ID);
 }
@@ -270,7 +275,7 @@ void CLayerSurface::onCommit() {
         g_pHyprOpenGL->markBlurDirtyForMonitor(PMONITOR); // so that blur is recalc'd
 
     CBox geomFixed = {geometry.x, geometry.y, geometry.width, geometry.height};
-    g_pHyprRenderer->damageBox(&geomFixed);
+    g_pHyprRenderer->damageBox(geomFixed);
 
     if (layerSurface->current.committed != 0) {
         if (layerSurface->current.committed & CLayerShellResource::eCommittedState::STATE_LAYER) {
@@ -307,17 +312,17 @@ void CLayerSurface::onCommit() {
         }
     }
 
-    if (realPosition.goal() != geometry.pos()) {
-        if (realPosition.isBeingAnimated())
-            realPosition = geometry.pos();
+    if (realPosition->goal() != geometry.pos()) {
+        if (realPosition->isBeingAnimated())
+            *realPosition = geometry.pos();
         else
-            realPosition.setValueAndWarp(geometry.pos());
+            realPosition->setValueAndWarp(geometry.pos());
     }
-    if (realSize.goal() != geometry.size()) {
-        if (realSize.isBeingAnimated())
-            realSize = geometry.size();
+    if (realSize->goal() != geometry.size()) {
+        if (realSize->isBeingAnimated())
+            *realSize = geometry.size();
         else
-            realSize.setValueAndWarp(geometry.size());
+            realSize->setValueAndWarp(geometry.size());
     }
 
     if (mapped && (layerSurface->current.committed & CLayerShellResource::eCommittedState::STATE_INTERACTIVITY)) {
@@ -327,7 +332,7 @@ void CLayerSurface::onCommit() {
             nullptr);
         if (!WASLASTFOCUS && popupHead) {
             popupHead->breadthfirst(
-                [&WASLASTFOCUS](CPopup* popup, void* data) {
+                [&WASLASTFOCUS](WP<CPopup> popup, void* data) {
                     WASLASTFOCUS = WASLASTFOCUS || (popup->m_pWLSurface && g_pSeatManager->state.keyboardFocus == popup->m_pWLSurface->resource());
                 },
                 nullptr);
@@ -378,54 +383,73 @@ void CLayerSurface::applyRules() {
     animationStyle.reset();
 
     for (auto const& rule : g_pConfigManager->getMatchingRules(self.lock())) {
-        if (rule.rule == "noanim")
-            noAnimations = true;
-        else if (rule.rule == "blur")
-            forceBlur = true;
-        else if (rule.rule == "blurpopups")
-            forceBlurPopups = true;
-        else if (rule.rule.starts_with("ignorealpha") || rule.rule.starts_with("ignorezero")) {
-            const auto  FIRST_SPACE_POS = rule.rule.find_first_of(' ');
-            std::string alphaValue      = "";
-            if (FIRST_SPACE_POS != std::string::npos)
-                alphaValue = rule.rule.substr(FIRST_SPACE_POS + 1);
+        switch (rule->ruleType) {
+            case CLayerRule::RULE_NOANIM: {
+                noAnimations = true;
+                break;
+            }
+            case CLayerRule::RULE_BLUR: {
+                forceBlur = true;
+                break;
+            }
+            case CLayerRule::RULE_BLURPOPUPS: {
+                forceBlurPopups = true;
+                break;
+            }
+            case CLayerRule::RULE_IGNOREALPHA:
+            case CLayerRule::RULE_IGNOREZERO: {
+                const auto  FIRST_SPACE_POS = rule->rule.find_first_of(' ');
+                std::string alphaValue      = "";
+                if (FIRST_SPACE_POS != std::string::npos)
+                    alphaValue = rule->rule.substr(FIRST_SPACE_POS + 1);
 
-            try {
-                ignoreAlpha = true;
-                if (!alphaValue.empty())
-                    ignoreAlphaValue = std::stof(alphaValue);
-            } catch (...) { Debug::log(ERR, "Invalid value passed to ignoreAlpha"); }
-        } else if (rule.rule == "dimaround") {
-            dimAround = true;
-        } else if (rule.rule.starts_with("xray")) {
-            CVarList vars{rule.rule, 0, ' '};
-            try {
-                xray = configStringToInt(vars[1]);
-            } catch (...) {}
-        } else if (rule.rule.starts_with("animation")) {
-            CVarList vars{rule.rule, 2, 's'};
-            animationStyle = vars[1];
-        } else if (rule.rule.starts_with("order")) {
-            CVarList vars{rule.rule, 2, 's'};
-            try {
-                order = std::stoi(vars[1]);
-            } catch (...) { Debug::log(ERR, "Invalid value passed to order"); }
+                try {
+                    ignoreAlpha = true;
+                    if (!alphaValue.empty())
+                        ignoreAlphaValue = std::stof(alphaValue);
+                } catch (...) { Debug::log(ERR, "Invalid value passed to ignoreAlpha"); }
+                break;
+            }
+            case CLayerRule::RULE_DIMAROUND: {
+                dimAround = true;
+                break;
+            }
+            case CLayerRule::RULE_XRAY: {
+                CVarList vars{rule->rule, 0, ' '};
+                try {
+                    xray = configStringToInt(vars[1]).value_or(false);
+                } catch (...) {}
+                break;
+            }
+            case CLayerRule::RULE_ANIMATION: {
+                CVarList vars{rule->rule, 2, 's'};
+                animationStyle = vars[1];
+                break;
+            }
+            case CLayerRule::RULE_ORDER: {
+                CVarList vars{rule->rule, 2, 's'};
+                try {
+                    order = std::stoi(vars[1]);
+                } catch (...) { Debug::log(ERR, "Invalid value passed to order"); }
+                break;
+            }
+            default: break;
         }
     }
 }
 
 void CLayerSurface::startAnimation(bool in, bool instant) {
-    const auto ANIMSTYLE = animationStyle.value_or(realPosition.m_pConfig->pValues->internalStyle);
     if (in) {
-        realPosition.m_pConfig = g_pConfigManager->getAnimationPropertyConfig("layersIn");
-        realSize.m_pConfig     = g_pConfigManager->getAnimationPropertyConfig("layersIn");
-        alpha.m_pConfig        = g_pConfigManager->getAnimationPropertyConfig("fadeLayersIn");
+        realPosition->setConfig(g_pConfigManager->getAnimationPropertyConfig("layersIn"));
+        realSize->setConfig(g_pConfigManager->getAnimationPropertyConfig("layersIn"));
+        alpha->setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeLayersIn"));
     } else {
-        realPosition.m_pConfig = g_pConfigManager->getAnimationPropertyConfig("layersOut");
-        realSize.m_pConfig     = g_pConfigManager->getAnimationPropertyConfig("layersOut");
-        alpha.m_pConfig        = g_pConfigManager->getAnimationPropertyConfig("fadeLayersOut");
+        realPosition->setConfig(g_pConfigManager->getAnimationPropertyConfig("layersOut"));
+        realSize->setConfig(g_pConfigManager->getAnimationPropertyConfig("layersOut"));
+        alpha->setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeLayersOut"));
     }
 
+    const auto ANIMSTYLE = animationStyle.value_or(realPosition->getStyle());
     if (ANIMSTYLE.starts_with("slide")) {
         // get closest edge
         const auto MIDDLE = geometry.middle();
@@ -466,9 +490,9 @@ void CLayerSurface::startAnimation(bool in, bool instant) {
             }
         }
 
-        realSize.setValueAndWarp(geometry.size());
-        alpha.setValueAndWarp(in ? 0.f : 1.f);
-        alpha = in ? 1.f : 0.f;
+        realSize->setValueAndWarp(geometry.size());
+        alpha->setValueAndWarp(in ? 0.f : 1.f);
+        *alpha = in ? 1.f : 0.f;
 
         Vector2D prePos;
 
@@ -493,11 +517,11 @@ void CLayerSurface::startAnimation(bool in, bool instant) {
         }
 
         if (in) {
-            realPosition.setValueAndWarp(prePos);
-            realPosition = geometry.pos();
+            realPosition->setValueAndWarp(prePos);
+            *realPosition = geometry.pos();
         } else {
-            realPosition.setValueAndWarp(geometry.pos());
-            realPosition = prePos;
+            realPosition->setValueAndWarp(geometry.pos());
+            *realPosition = prePos;
         }
 
     } else if (ANIMSTYLE.starts_with("popin")) {
@@ -516,25 +540,25 @@ void CLayerSurface::startAnimation(bool in, bool instant) {
         const auto GOALSIZE = (geometry.size() * minPerc).clamp({5, 5});
         const auto GOALPOS  = geometry.pos() + (geometry.size() - GOALSIZE) / 2.f;
 
-        alpha.setValueAndWarp(in ? 0.f : 1.f);
-        alpha = in ? 1.f : 0.f;
+        alpha->setValueAndWarp(in ? 0.f : 1.f);
+        *alpha = in ? 1.f : 0.f;
 
         if (in) {
-            realSize.setValueAndWarp(GOALSIZE);
-            realPosition.setValueAndWarp(GOALPOS);
-            realSize     = geometry.size();
-            realPosition = geometry.pos();
+            realSize->setValueAndWarp(GOALSIZE);
+            realPosition->setValueAndWarp(GOALPOS);
+            *realSize     = geometry.size();
+            *realPosition = geometry.pos();
         } else {
-            realSize.setValueAndWarp(geometry.size());
-            realPosition.setValueAndWarp(geometry.pos());
-            realSize     = GOALSIZE;
-            realPosition = GOALPOS;
+            realSize->setValueAndWarp(geometry.size());
+            realPosition->setValueAndWarp(geometry.pos());
+            *realSize     = GOALSIZE;
+            *realPosition = GOALPOS;
         }
     } else {
         // fade
-        realPosition.setValueAndWarp(geometry.pos());
-        realSize.setValueAndWarp(geometry.size());
-        alpha = in ? 1.f : 0.f;
+        realPosition->setValueAndWarp(geometry.pos());
+        realSize->setValueAndWarp(geometry.size());
+        *alpha = in ? 1.f : 0.f;
     }
 
     if (!in)
@@ -545,7 +569,7 @@ bool CLayerSurface::isFadedOut() {
     if (!fadingOut)
         return false;
 
-    return !realPosition.isBeingAnimated() && !realSize.isBeingAnimated() && !alpha.isBeingAnimated();
+    return !realPosition->isBeingAnimated() && !realSize->isBeingAnimated() && !alpha->isBeingAnimated();
 }
 
 int CLayerSurface::popupsCount() {
@@ -553,7 +577,7 @@ int CLayerSurface::popupsCount() {
         return 0;
 
     int no = -1; // we have one dummy
-    popupHead->breadthfirst([](CPopup* p, void* data) { *(int*)data += 1; }, &no);
+    popupHead->breadthfirst([](WP<CPopup> p, void* data) { *(int*)data += 1; }, &no);
     return no;
 }
 

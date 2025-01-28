@@ -2,10 +2,11 @@
 #include <fcntl.h>
 #include <sys/utsname.h>
 #include <link.h>
-#include <time.h>
-#include <errno.h>
+#include <ctime>
+#include <cerrno>
 #include <sys/stat.h>
 #include <filesystem>
+#include "../helpers/MiscFunctions.hpp"
 
 #include "../plugins/PluginSystem.hpp"
 #include "../signal-safe.hpp"
@@ -31,10 +32,10 @@ static char const* const MESSAGES[] = {"Sorry, didn't mean to...",
 
 // <random> is not async-signal-safe, fake it with time(NULL) instead
 char const* getRandomMessage() {
-    return MESSAGES[time(NULL) % (sizeof(MESSAGES) / sizeof(MESSAGES[0]))];
+    return MESSAGES[time(nullptr) % (sizeof(MESSAGES) / sizeof(MESSAGES[0]))];
 }
 
-[[noreturn]] inline void exit_with_error(char const* err) {
+[[noreturn]] inline void exitWithError(char const* err) {
     write(STDERR_FILENO, err, strlen(err));
     // perror() is not signal-safe, but we use it here
     // because if the crash-handler already crashed, it can't get any worse.
@@ -42,17 +43,17 @@ char const* getRandomMessage() {
     abort();
 }
 
-void CrashReporter::createAndSaveCrash(int sig) {
-    int reportFd;
+void NCrashReporter::createAndSaveCrash(int sig) {
+    int reportFd = -1;
 
     // We're in the signal handler, so we *only* have stack memory.
     // To save as much stack memory as possible,
     // destroy things as soon as possible.
     {
-        MaxLengthCString<255> reportPath;
+        CMaxLengthCString<255> reportPath;
 
-        const auto            HOME       = sig_getenv("HOME");
-        const auto            CACHE_HOME = sig_getenv("XDG_CACHE_HOME");
+        const auto             HOME       = sigGetenv("HOME");
+        const auto             CACHE_HOME = sigGetenv("XDG_CACHE_HOME");
 
         if (CACHE_HOME && CACHE_HOME[0] != '\0') {
             reportPath += CACHE_HOME;
@@ -61,24 +62,24 @@ void CrashReporter::createAndSaveCrash(int sig) {
             reportPath += HOME;
             reportPath += "/.cache/hyprland";
         } else {
-            exit_with_error("$CACHE_HOME and $HOME not set, nowhere to report crash\n");
+            exitWithError("$CACHE_HOME and $HOME not set, nowhere to report crash\n");
             return;
         }
 
-        int ret = mkdir(reportPath.get_str(), S_IRWXU);
+        int ret = mkdir(reportPath.getStr(), S_IRWXU);
         //__asm__("int $3");
         if (ret < 0 && errno != EEXIST) {
-            exit_with_error("failed to mkdir() crash report directory\n");
+            exitWithError("failed to mkdir() crash report directory\n");
         }
         reportPath += "/hyprlandCrashReport";
-        reportPath.write_num(getpid());
+        reportPath.writeNum(getpid());
         reportPath += ".txt";
 
         {
-            BufFileWriter<64> stderr(2);
+            CBufFileWriter<64> stderr(2);
             stderr += "Hyprland has crashed :( Consult the crash report at ";
             if (!reportPath.boundsExceeded()) {
-                stderr += reportPath.get_str();
+                stderr += reportPath.getStr();
             } else {
                 stderr += "[ERROR: Crash report path does not fit into memory! Check if your $CACHE_HOME/$HOME is too deeply nested. Max 255 characters.]";
             }
@@ -86,12 +87,12 @@ void CrashReporter::createAndSaveCrash(int sig) {
             stderr.flush();
         }
 
-        reportFd = open(reportPath.get_str(), O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
+        reportFd = open(reportPath.getStr(), O_WRONLY | O_CREAT, S_IRUSR | S_IWUSR);
         if (reportFd < 0) {
-            exit_with_error("Failed to open crash report path for writing");
+            exitWithError("Failed to open crash report path for writing");
         }
     }
-    BufFileWriter<512> finalCrashReport(reportFd);
+    CBufFileWriter<512> finalCrashReport(reportFd);
 
     finalCrashReport += "--------------------------------------------\n   Hyprland Crash Report\n--------------------------------------------\n";
     finalCrashReport += getRandomMessage();
@@ -100,7 +101,7 @@ void CrashReporter::createAndSaveCrash(int sig) {
     finalCrashReport += "Hyprland received signal ";
     finalCrashReport.writeNum(sig);
     finalCrashReport += '(';
-    finalCrashReport += sig_strsignal(sig);
+    finalCrashReport += sigStrsignal(sig);
     finalCrashReport += ")\nVersion: ";
     finalCrashReport += GIT_COMMIT_HASH;
     finalCrashReport += "\nTag: ";
@@ -111,7 +112,7 @@ void CrashReporter::createAndSaveCrash(int sig) {
 #ifdef LEGACY_RENDERER
     finalCrashReport += "legacyrenderer\n";
 #endif
-#ifndef ISDEBUG
+#if ISDEBUG
     finalCrashReport += "debug\n";
 #endif
 #ifdef NO_XWAYLAND
@@ -122,9 +123,9 @@ void CrashReporter::createAndSaveCrash(int sig) {
     if (g_pPluginSystem && g_pPluginSystem->pluginCount() > 0) {
         finalCrashReport += "Hyprland seems to be running with plugins. This crash might not be Hyprland's fault.\nPlugins:\n";
 
-        size_t   count = g_pPluginSystem->pluginCount();
-        CPlugin* plugins[count];
-        g_pPluginSystem->sig_getPlugins(plugins, count);
+        const size_t          count = g_pPluginSystem->pluginCount();
+        std::vector<CPlugin*> plugins(count);
+        g_pPluginSystem->sigGetPlugins(plugins.data(), count);
 
         for (size_t i = 0; i < count; i++) {
             auto p = plugins[i];
@@ -159,9 +160,9 @@ void CrashReporter::createAndSaveCrash(int sig) {
 
     finalCrashReport += "GPU:\n\t";
 #if defined(__DragonFly__) || defined(__FreeBSD__)
-    finalCrashReport.writeCmdOutput("pciconf -lv | fgrep -A4 vga");
+    finalCrashReport.writeCmdOutput("pciconf -lv | grep -F -A4 vga");
 #else
-    finalCrashReport.writeCmdOutput("lspci -vnn | grep VGA");
+    finalCrashReport.writeCmdOutput("lspci -vnn | grep -E '(VGA|Display|3D)'");
 #endif
 
     finalCrashReport += "\n\nos-release:\n";
@@ -241,5 +242,5 @@ void CrashReporter::createAndSaveCrash(int sig) {
 
     finalCrashReport += "\n\nLog tail:\n";
 
-    finalCrashReport += std::string_view(Debug::rollingLog).substr(Debug::rollingLog.find("\n") + 1);
+    finalCrashReport += std::string_view(Debug::rollingLog).substr(Debug::rollingLog.find('\n') + 1);
 }

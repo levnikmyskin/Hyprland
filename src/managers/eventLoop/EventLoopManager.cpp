@@ -1,12 +1,14 @@
 #include "EventLoopManager.hpp"
 #include "../../debug/Log.hpp"
 #include "../../Compositor.hpp"
+#include "../../config/ConfigWatcher.hpp"
 
 #include <algorithm>
 #include <limits>
+#include <ranges>
 
 #include <sys/timerfd.h>
-#include <time.h>
+#include <ctime>
 
 #include <aquamarine/backend/Backend.hpp>
 
@@ -19,14 +21,16 @@ CEventLoopManager::CEventLoopManager(wl_display* display, wl_event_loop* wlEvent
 }
 
 CEventLoopManager::~CEventLoopManager() {
-    for (auto const& eventSource : m_sWayland.aqEventSources) {
-        wl_event_source_remove(eventSource);
+    for (auto const& [_, eventSourceData] : aqEventSources) {
+        wl_event_source_remove(eventSourceData.eventSource);
     }
 
     if (m_sWayland.eventSource)
         wl_event_source_remove(m_sWayland.eventSource);
     if (m_sIdle.eventSource)
         wl_event_source_remove(m_sIdle.eventSource);
+    if (m_configWatcherInotifySource)
+        wl_event_source_remove(m_configWatcherInotifySource);
     if (m_sTimers.timerfd >= 0)
         close(m_sTimers.timerfd);
 }
@@ -42,13 +46,19 @@ static int aquamarineFDWrite(int fd, uint32_t mask, void* data) {
     return 1;
 }
 
+static int configWatcherWrite(int fd, uint32_t mask, void* data) {
+    g_pConfigWatcher->onInotifyEvent();
+    return 0;
+}
+
 void CEventLoopManager::enterLoop() {
     m_sWayland.eventSource = wl_event_loop_add_fd(m_sWayland.loop, m_sTimers.timerfd, WL_EVENT_READABLE, timerWrite, nullptr);
 
-    aqPollFDs = g_pCompositor->m_pAqBackend->getPollFDs();
-    for (auto const& fd : aqPollFDs) {
-        m_sWayland.aqEventSources.emplace_back(wl_event_loop_add_fd(m_sWayland.loop, fd->fd, WL_EVENT_READABLE, aquamarineFDWrite, fd.get()));
-    }
+    if (const auto FD = g_pConfigWatcher->getInotifyFD(); FD >= 0)
+        m_configWatcherInotifySource = wl_event_loop_add_fd(m_sWayland.loop, FD, WL_EVENT_READABLE, configWatcherWrite, nullptr);
+
+    syncPollFDs();
+    m_sListeners.pollFDsChanged = g_pCompositor->m_pAqBackend->events.pollFDsChanged.registerListener([this](std::any d) { syncPollFDs(); });
 
     // if we have a session, dispatch it to get the pending input devices
     if (g_pCompositor->m_pAqBackend->hasSession())
@@ -95,7 +105,7 @@ void CEventLoopManager::nudgeTimers() {
     // remove timers that have gone missing
     std::erase_if(m_sTimers.timers, [](const auto& t) { return t.strongRef() <= 1; });
 
-    long nextTimerUs = 10 * 1000 * 1000; // 10s
+    long nextTimerUs = 10L * 1000 * 1000; // 10s
 
     for (auto const& t : m_sTimers.timers) {
         if (auto const& µs = t->leftUs(); µs < nextTimerUs)
@@ -132,4 +142,25 @@ void CEventLoopManager::doLater(const std::function<void()>& fn) {
             }
         },
         &m_sIdle);
+}
+
+void CEventLoopManager::syncPollFDs() {
+    auto aqPollFDs = g_pCompositor->m_pAqBackend->getPollFDs();
+
+    std::erase_if(aqEventSources, [&](const auto& item) {
+        auto const& [fd, eventSourceData] = item;
+
+        // If no pollFD has the same fd, remove this event source
+        const bool shouldRemove = std::ranges::none_of(aqPollFDs, [&](const auto& pollFD) { return pollFD->fd == fd; });
+
+        if (shouldRemove)
+            wl_event_source_remove(eventSourceData.eventSource);
+
+        return shouldRemove;
+    });
+
+    for (auto& fd : aqPollFDs | std::views::filter([&](SP<Aquamarine::SPollFD> fd) { return !aqEventSources.contains(fd->fd); })) {
+        auto eventSource       = wl_event_loop_add_fd(m_sWayland.loop, fd->fd, WL_EVENT_READABLE, aquamarineFDWrite, fd.get());
+        aqEventSources[fd->fd] = {.pollFD = fd, .eventSource = eventSource};
+    }
 }

@@ -1,5 +1,9 @@
+#include <re2/re2.h>
+
 #include "ConfigManager.hpp"
+#include "ConfigWatcher.hpp"
 #include "../managers/KeybindManager.hpp"
+#include "../Compositor.hpp"
 
 #include "../render/decorations/CHyprGroupBarDecoration.hpp"
 #include "config/ConfigDataValues.hpp"
@@ -8,11 +12,24 @@
 #include "../protocols/LayerShell.hpp"
 #include "../xwayland/XWayland.hpp"
 #include "../protocols/OutputManagement.hpp"
+#include "../managers/AnimationManager.hpp"
+#include "../desktop/LayerSurface.hpp"
+#include "defaultConfig.hpp"
 
+#include "../render/Renderer.hpp"
+#include "../hyprerror/HyprError.hpp"
+#include "../managers/input/InputManager.hpp"
+#include "../managers/eventLoop/EventLoopManager.hpp"
+#include "../managers/LayoutManager.hpp"
+#include "../managers/EventManager.hpp"
+#include "../debug/HyprNotificationOverlay.hpp"
+#include "../plugins/PluginSystem.hpp"
+
+#include "managers/HookSystemManager.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <hyprutils/path/Path.hpp>
-#include <string.h>
+#include <cstring>
 #include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -28,8 +45,11 @@
 #include <unordered_set>
 #include <hyprutils/string/String.hpp>
 #include <filesystem>
+#include <memory>
 using namespace Hyprutils::String;
+using namespace Hyprutils::Animation;
 
+//NOLINTNEXTLINE
 extern "C" char** environ;
 
 #include "ConfigDescriptions.hpp"
@@ -67,7 +87,10 @@ static Hyprlang::CParseResult configHandleGradientSet(const char* VALUE, void** 
         }
 
         try {
-            DATA->m_vColors.push_back(CColor(configStringToInt(var)));
+            const auto COL = configStringToInt(var);
+            if (!COL)
+                throw std::runtime_error(std::format("failed to parse {} as a color", var));
+            DATA->m_vColors.emplace_back(COL.value());
         } catch (std::exception& e) {
             Debug::log(WARN, "Error parsing gradient {}", V);
             parseError = "Error parsing gradient " + V + ": " + e.what();
@@ -76,10 +99,13 @@ static Hyprlang::CParseResult configHandleGradientSet(const char* VALUE, void** 
 
     if (DATA->m_vColors.size() == 0) {
         Debug::log(WARN, "Error parsing gradient {}", V);
-        parseError = "Error parsing gradient " + V + ": No colors?";
+        if (parseError.empty())
+            parseError = "Error parsing gradient " + V + ": No colors?";
 
-        DATA->m_vColors.push_back(0); // transparent
+        DATA->m_vColors.emplace_back(0); // transparent
     }
+
+    DATA->updateColorsOk();
 
     Hyprlang::CParseResult result;
     if (!parseError.empty())
@@ -118,6 +144,18 @@ static void configHandleGapDestroy(void** data) {
         delete reinterpret_cast<CCssGapData*>(*data);
 }
 
+static Hyprlang::CParseResult handleExec(const char* c, const char* v) {
+    const std::string      VALUE   = v;
+    const std::string      COMMAND = c;
+
+    const auto             RESULT = g_pConfigManager->handleExec(COMMAND, VALUE);
+
+    Hyprlang::CParseResult result;
+    if (RESULT.has_value())
+        result.setError(RESULT.value().c_str());
+    return result;
+}
+
 static Hyprlang::CParseResult handleRawExec(const char* c, const char* v) {
     const std::string      VALUE   = v;
     const std::string      COMMAND = c;
@@ -135,6 +173,18 @@ static Hyprlang::CParseResult handleExecOnce(const char* c, const char* v) {
     const std::string      COMMAND = c;
 
     const auto             RESULT = g_pConfigManager->handleExecOnce(COMMAND, VALUE);
+
+    Hyprlang::CParseResult result;
+    if (RESULT.has_value())
+        result.setError(RESULT.value().c_str());
+    return result;
+}
+
+static Hyprlang::CParseResult handleExecRawOnce(const char* c, const char* v) {
+    const std::string      VALUE   = v;
+    const std::string      COMMAND = c;
+
+    const auto             RESULT = g_pConfigManager->handleExecRawOnce(COMMAND, VALUE);
 
     Hyprlang::CParseResult result;
     if (RESULT.has_value())
@@ -325,8 +375,8 @@ static Hyprlang::CParseResult handlePlugin(const char* c, const char* v) {
 CConfigManager::CConfigManager() {
     const auto ERR = verifyConfigExists();
 
-    configPaths.emplace_back(getMainConfigPath());
-    m_pConfig = std::make_unique<Hyprlang::CConfig>(configPaths.begin()->c_str(), Hyprlang::SConfigOptions{.throwAllErrors = true, .allowMissingConfig = true});
+    m_configPaths.emplace_back(getMainConfigPath());
+    m_pConfig = makeUnique<Hyprlang::CConfig>(m_configPaths.begin()->c_str(), Hyprlang::SConfigOptions{.throwAllErrors = true, .allowMissingConfig = true});
 
     m_pConfig->addConfigValue("general:border_size", Hyprlang::INT{1});
     m_pConfig->addConfigValue("general:no_border_on_floating", Hyprlang::INT{0});
@@ -377,6 +427,8 @@ CConfigManager::CConfigManager() {
     m_pConfig->addConfigValue("misc:middle_click_paste", Hyprlang::INT{1});
     m_pConfig->addConfigValue("misc:render_unfocused_fps", Hyprlang::INT{15});
     m_pConfig->addConfigValue("misc:disable_xdg_env_checks", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("misc:disable_hyprland_qtutils_check", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("misc:lockdead_screen_delay", Hyprlang::INT{1000});
 
     m_pConfig->addConfigValue("group:insert_after_current", Hyprlang::INT{1});
     m_pConfig->addConfigValue("group:focus_removed_window", Hyprlang::INT{1});
@@ -401,6 +453,7 @@ CConfigManager::CConfigManager() {
     m_pConfig->addConfigValue("debug:log_damage", Hyprlang::INT{0});
     m_pConfig->addConfigValue("debug:overlay", Hyprlang::INT{0});
     m_pConfig->addConfigValue("debug:damage_blink", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("debug:pass", Hyprlang::INT{0});
     m_pConfig->addConfigValue("debug:disable_logs", Hyprlang::INT{1});
     m_pConfig->addConfigValue("debug:disable_time", Hyprlang::INT{1});
     m_pConfig->addConfigValue("debug:enable_stdout_logs", Hyprlang::INT{0});
@@ -414,6 +467,7 @@ CConfigManager::CConfigManager() {
     m_pConfig->addConfigValue("debug:colored_stdout_logs", Hyprlang::INT{1});
 
     m_pConfig->addConfigValue("decoration:rounding", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("decoration:rounding_power", {2.F});
     m_pConfig->addConfigValue("decoration:blur:enabled", Hyprlang::INT{1});
     m_pConfig->addConfigValue("decoration:blur:size", Hyprlang::INT{8});
     m_pConfig->addConfigValue("decoration:blur:passes", Hyprlang::INT{1});
@@ -428,6 +482,8 @@ CConfigManager::CConfigManager() {
     m_pConfig->addConfigValue("decoration:blur:special", Hyprlang::INT{0});
     m_pConfig->addConfigValue("decoration:blur:popups", Hyprlang::INT{0});
     m_pConfig->addConfigValue("decoration:blur:popups_ignorealpha", {0.2F});
+    m_pConfig->addConfigValue("decoration:blur:input_methods", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("decoration:blur:input_methods_ignorealpha", {0.2F});
     m_pConfig->addConfigValue("decoration:active_opacity", {1.F});
     m_pConfig->addConfigValue("decoration:inactive_opacity", {1.F});
     m_pConfig->addConfigValue("decoration:fullscreen_opacity", {1.F});
@@ -462,7 +518,9 @@ CConfigManager::CConfigManager() {
     m_pConfig->addConfigValue("master:special_scale_factor", {1.f});
     m_pConfig->addConfigValue("master:mfact", {0.55f});
     m_pConfig->addConfigValue("master:new_status", {"slave"});
-    m_pConfig->addConfigValue("master:always_center_master", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("master:slave_count_for_center_master", Hyprlang::INT{2});
+    m_pConfig->addConfigValue("master:center_master_slaves_on_right", Hyprlang::INT{1});
+    m_pConfig->addConfigValue("master:center_ignores_reserved", Hyprlang::INT{0});
     m_pConfig->addConfigValue("master:new_on_active", {"none"});
     m_pConfig->addConfigValue("master:new_on_top", Hyprlang::INT{0});
     m_pConfig->addConfigValue("master:orientation", {"left"});
@@ -531,8 +589,10 @@ CConfigManager::CConfigManager() {
     m_pConfig->addConfigValue("binds:focus_preferred_method", Hyprlang::INT{0});
     m_pConfig->addConfigValue("binds:ignore_group_lock", Hyprlang::INT{0});
     m_pConfig->addConfigValue("binds:movefocus_cycles_fullscreen", Hyprlang::INT{1});
+    m_pConfig->addConfigValue("binds:movefocus_cycles_groupfirst", Hyprlang::INT{0});
     m_pConfig->addConfigValue("binds:disable_keybind_grabbing", Hyprlang::INT{0});
     m_pConfig->addConfigValue("binds:window_direction_monitor_fallback", Hyprlang::INT{1});
+    m_pConfig->addConfigValue("binds:allow_pin_fullscreen", Hyprlang::INT{0});
 
     m_pConfig->addConfigValue("gestures:workspace_swipe", Hyprlang::INT{0});
     m_pConfig->addConfigValue("gestures:workspace_swipe_fingers", Hyprlang::INT{3});
@@ -554,9 +614,9 @@ CConfigManager::CConfigManager() {
     m_pConfig->addConfigValue("xwayland:force_zero_scaling", Hyprlang::INT{0});
 
     m_pConfig->addConfigValue("opengl:nvidia_anti_flicker", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("opengl:force_introspection", Hyprlang::INT{2});
+    m_pConfig->addConfigValue("opengl:force_introspection", Hyprlang::INT{1}); // TODO: remove this. I don't think it does us any good to disable intro.
 
-    m_pConfig->addConfigValue("cursor:no_hardware_cursors", Hyprlang::INT{2});
+    m_pConfig->addConfigValue("cursor:no_hardware_cursors", Hyprlang::INT{0});
     m_pConfig->addConfigValue("cursor:no_break_fs_vrr", Hyprlang::INT{0});
     m_pConfig->addConfigValue("cursor:min_refresh_rate", Hyprlang::INT{24});
     m_pConfig->addConfigValue("cursor:hotspot_padding", Hyprlang::INT{0});
@@ -571,7 +631,8 @@ CConfigManager::CConfigManager() {
     m_pConfig->addConfigValue("cursor:sync_gsettings_theme", Hyprlang::INT{1});
     m_pConfig->addConfigValue("cursor:hide_on_key_press", Hyprlang::INT{0});
     m_pConfig->addConfigValue("cursor:hide_on_touch", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("cursor:use_cpu_buffer", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("cursor:use_cpu_buffer", Hyprlang::INT{2});
+    m_pConfig->addConfigValue("cursor:warp_back_after_non_mouse_input", Hyprlang::INT{0});
 
     m_pConfig->addConfigValue("autogenerated", Hyprlang::INT{0});
 
@@ -594,6 +655,16 @@ CConfigManager::CConfigManager() {
     m_pConfig->addConfigValue("render:explicit_sync_kms", Hyprlang::INT{2});
     m_pConfig->addConfigValue("render:direct_scanout", Hyprlang::INT{0});
     m_pConfig->addConfigValue("render:expand_undersized_textures", Hyprlang::INT{1});
+    m_pConfig->addConfigValue("render:xp_mode", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("render:ctm_animation", Hyprlang::INT{2});
+    m_pConfig->addConfigValue("render:allow_early_buffer_release", Hyprlang::INT{1});
+
+    m_pConfig->addConfigValue("ecosystem:no_update_news", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("ecosystem:no_donation_nag", Hyprlang::INT{0});
+
+    m_pConfig->addConfigValue("experimental:wide_color_gamut", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("experimental:hdr", Hyprlang::INT{0});
+    m_pConfig->addConfigValue("experimental:xx_color_management_v4", Hyprlang::INT{0});
 
     // devices
     m_pConfig->addSpecialCategory("device", {"name"});
@@ -633,8 +704,10 @@ CConfigManager::CConfigManager() {
     m_pConfig->addSpecialConfigValue("device", "active_area_size", Hyprlang::VEC2{0, 0});     // only for tablets
 
     // keywords
-    m_pConfig->registerHandler(&::handleRawExec, "exec", {false});
+    m_pConfig->registerHandler(&::handleExec, "exec", {false});
+    m_pConfig->registerHandler(&::handleRawExec, "execr", {false});
     m_pConfig->registerHandler(&::handleExecOnce, "exec-once", {false});
+    m_pConfig->registerHandler(&::handleExecRawOnce, "execr-once", {false});
     m_pConfig->registerHandler(&::handleExecShutdown, "exec-shutdown", {false});
     m_pConfig->registerHandler(&::handleMonitor, "monitor", {false});
     m_pConfig->registerHandler(&::handleBind, "bind", {true});
@@ -656,18 +729,20 @@ CConfigManager::CConfigManager() {
 
     m_pConfig->commence();
 
-    setDefaultAnimationVars();
     resetHLConfig();
 
-    Debug::log(INFO,
-               "!!!!HEY YOU, YES YOU!!!!: further logs to stdout / logfile are disabled by default. BEFORE SENDING THIS LOG, ENABLE THEM. Use debug:disable_logs = false to do so: "
-               "https://wiki.hyprland.org/Configuring/Variables/#debug");
+    if (!g_pCompositor->m_bOnlyConfigVerification) {
+        Debug::log(
+            INFO,
+            "!!!!HEY YOU, YES YOU!!!!: further logs to stdout / logfile are disabled by default. BEFORE SENDING THIS LOG, ENABLE THEM. Use debug:disable_logs = false to do so: "
+            "https://wiki.hyprland.org/Configuring/Variables/#debug");
+    }
 
     Debug::disableLogs = reinterpret_cast<int64_t* const*>(m_pConfig->getConfigValuePtr("debug:disable_logs")->getDataStaticPtr());
     Debug::disableTime = reinterpret_cast<int64_t* const*>(m_pConfig->getConfigValuePtr("debug:disable_time")->getDataStaticPtr());
 
-    if (ERR.has_value())
-        g_pHyprError->queueCreate(ERR.value(), CColor{1.0, 0.1, 0.1, 1.0});
+    if (g_pEventLoopManager && ERR.has_value())
+        g_pEventLoopManager->doLater([ERR] { g_pHyprError->queueCreate(ERR.value(), CHyprColor{1.0, 0.1, 0.1, 1.0}); });
 }
 
 std::optional<std::string> CConfigManager::generateConfig(std::string configPath) {
@@ -693,20 +768,24 @@ std::optional<std::string> CConfigManager::generateConfig(std::string configPath
 }
 
 std::string CConfigManager::getMainConfigPath() {
-    if (!g_pCompositor->explicitConfigPath.empty())
-        return g_pCompositor->explicitConfigPath;
+    static std::string CONFIG_PATH = [this]() -> std::string {
+        if (!g_pCompositor->explicitConfigPath.empty())
+            return g_pCompositor->explicitConfigPath;
 
-    if (const auto CFG_ENV = getenv("HYPRLAND_CONFIG"); CFG_ENV)
-        return CFG_ENV;
+        if (const auto CFG_ENV = getenv("HYPRLAND_CONFIG"); CFG_ENV)
+            return CFG_ENV;
 
-    const auto PATHS = Hyprutils::Path::findConfig(ISDEBUG ? "hyprlandd" : "hyprland");
-    if (PATHS.first.has_value()) {
-        return PATHS.first.value();
-    } else if (PATHS.second.has_value()) {
-        const auto CONFIGPATH = Hyprutils::Path::fullConfigPath(PATHS.second.value(), ISDEBUG ? "hyprlandd" : "hyprland");
-        return generateConfig(CONFIGPATH).value();
-    } else
-        throw std::runtime_error("Neither HOME nor XDG_CONFIG_HOME are set in the environment. Could not find config in XDG_CONFIG_DIRS or /etc/xdg.");
+        const auto PATHS = Hyprutils::Path::findConfig(ISDEBUG ? "hyprlandd" : "hyprland");
+        if (PATHS.first.has_value()) {
+            return PATHS.first.value();
+        } else if (PATHS.second.has_value()) {
+            const auto CONFIGPATH = Hyprutils::Path::fullConfigPath(PATHS.second.value(), ISDEBUG ? "hyprlandd" : "hyprland");
+            return generateConfig(CONFIGPATH).value();
+        } else
+            throw std::runtime_error("Neither HOME nor XDG_CONFIG_HOME are set in the environment. Could not find config in XDG_CONFIG_DIRS or /etc/xdg.");
+    }();
+
+    return CONFIG_PATH;
 }
 
 std::optional<std::string> CConfigManager::verifyConfigExists() {
@@ -718,11 +797,11 @@ std::optional<std::string> CConfigManager::verifyConfigExists() {
     return {};
 }
 
-const std::string CConfigManager::getConfigString() {
+std::string CConfigManager::getConfigString() {
     std::string configString;
     std::string currFileContent;
 
-    for (auto path : configPaths) {
+    for (const auto& path : m_configPaths) {
         std::ifstream configFile(path);
         configString += ("\n\nConfig File: " + path + ": ");
         if (!configFile.is_open()) {
@@ -745,99 +824,88 @@ void CConfigManager::reload() {
     EMIT_HOOK_EVENT("preConfigReload", nullptr);
     setDefaultAnimationVars();
     resetHLConfig();
-    configCurrentPath = getMainConfigPath();
-    const auto ERR    = m_pConfig->parse();
+    configCurrentPath                      = getMainConfigPath();
+    const auto ERR                         = m_pConfig->parse();
+    m_bLastConfigVerificationWasSuccessful = !ERR.error;
     postConfigReload(ERR);
 }
 
+std::string CConfigManager::verify() {
+    setDefaultAnimationVars();
+    resetHLConfig();
+    configCurrentPath                      = getMainConfigPath();
+    const auto ERR                         = m_pConfig->parse();
+    m_bLastConfigVerificationWasSuccessful = !ERR.error;
+    if (ERR.error)
+        return ERR.getError();
+    return "config ok";
+}
+
 void CConfigManager::setDefaultAnimationVars() {
-    if (isFirstLaunch) {
-        INITANIMCFG("global");
-        INITANIMCFG("windows");
-        INITANIMCFG("layers");
-        INITANIMCFG("fade");
-        INITANIMCFG("border");
-        INITANIMCFG("borderangle");
+    m_AnimationTree.createNode("__internal_fadeCTM");
+    m_AnimationTree.createNode("global");
 
-        // windows
-        INITANIMCFG("windowsIn");
-        INITANIMCFG("windowsOut");
-        INITANIMCFG("windowsMove");
+    // global
+    m_AnimationTree.createNode("windows", "global");
+    m_AnimationTree.createNode("layers", "global");
+    m_AnimationTree.createNode("fade", "global");
+    m_AnimationTree.createNode("border", "global");
+    m_AnimationTree.createNode("borderangle", "global");
+    m_AnimationTree.createNode("workspaces", "global");
 
-        // layers
-        INITANIMCFG("layersIn");
-        INITANIMCFG("layersOut");
+    // layer
+    m_AnimationTree.createNode("layersIn", "layers");
+    m_AnimationTree.createNode("layersOut", "layers");
 
-        // fade
-        INITANIMCFG("fadeIn");
-        INITANIMCFG("fadeOut");
-        INITANIMCFG("fadeSwitch");
-        INITANIMCFG("fadeShadow");
-        INITANIMCFG("fadeDim");
+    // windows
+    m_AnimationTree.createNode("windowsIn", "windows");
+    m_AnimationTree.createNode("windowsOut", "windows");
+    m_AnimationTree.createNode("windowsMove", "windows");
 
-        // border
+    // fade
+    m_AnimationTree.createNode("fadeIn", "fade");
+    m_AnimationTree.createNode("fadeOut", "fade");
+    m_AnimationTree.createNode("fadeSwitch", "fade");
+    m_AnimationTree.createNode("fadeShadow", "fade");
+    m_AnimationTree.createNode("fadeDim", "fade");
+    m_AnimationTree.createNode("fadeLayers", "fade");
+    m_AnimationTree.createNode("fadeLayersIn", "fadeLayers");
+    m_AnimationTree.createNode("fadeLayersOut", "fadeLayers");
 
-        // workspaces
-        INITANIMCFG("workspaces");
-        INITANIMCFG("workspacesIn");
-        INITANIMCFG("workspacesOut");
-        INITANIMCFG("specialWorkspace");
-        INITANIMCFG("specialWorkspaceIn");
-        INITANIMCFG("specialWorkspaceOut");
-    }
+    // workspaces
+    m_AnimationTree.createNode("workspacesIn", "workspaces");
+    m_AnimationTree.createNode("workspacesOut", "workspaces");
+    m_AnimationTree.createNode("specialWorkspace", "workspaces");
+    m_AnimationTree.createNode("specialWorkspaceIn", "specialWorkspace");
+    m_AnimationTree.createNode("specialWorkspaceOut", "specialWorkspace");
 
-    // init the values
-    animationConfig["global"] = {false, "default", "", 8.f, 1, &animationConfig["general"], nullptr};
-
-    CREATEANIMCFG("windows", "global");
-    CREATEANIMCFG("layers", "global");
-    CREATEANIMCFG("fade", "global");
-    CREATEANIMCFG("border", "global");
-    CREATEANIMCFG("borderangle", "global");
-    CREATEANIMCFG("workspaces", "global");
-
-    CREATEANIMCFG("layersIn", "layers");
-    CREATEANIMCFG("layersOut", "layers");
-
-    CREATEANIMCFG("windowsIn", "windows");
-    CREATEANIMCFG("windowsOut", "windows");
-    CREATEANIMCFG("windowsMove", "windows");
-
-    CREATEANIMCFG("fadeIn", "fade");
-    CREATEANIMCFG("fadeOut", "fade");
-    CREATEANIMCFG("fadeSwitch", "fade");
-    CREATEANIMCFG("fadeShadow", "fade");
-    CREATEANIMCFG("fadeDim", "fade");
-    CREATEANIMCFG("fadeLayers", "fade");
-    CREATEANIMCFG("fadeLayersIn", "fadeLayers");
-    CREATEANIMCFG("fadeLayersOut", "fadeLayers");
-
-    CREATEANIMCFG("workspacesIn", "workspaces");
-    CREATEANIMCFG("workspacesOut", "workspaces");
-    CREATEANIMCFG("specialWorkspace", "workspaces");
-    CREATEANIMCFG("specialWorkspaceIn", "specialWorkspace");
-    CREATEANIMCFG("specialWorkspaceOut", "specialWorkspace");
+    // init the root nodes
+    m_AnimationTree.setConfigForNode("global", 1, 8.f, "", "default");
+    m_AnimationTree.setConfigForNode("__internal_fadeCTM", 1, 5.f, "", "linear");
+    m_AnimationTree.setConfigForNode("borderangle", 0, 0.f, "", "default");
 }
 
 std::optional<std::string> CConfigManager::resetHLConfig() {
-    m_dMonitorRules.clear();
-    m_dWindowRules.clear();
+    m_vMonitorRules.clear();
+    m_vWindowRules.clear();
     g_pKeybindManager->clearKeybinds();
     g_pAnimationManager->removeAllBeziers();
+    g_pAnimationManager->addBezierWithName("linear", Vector2D(0.0, 0.0), Vector2D(1.0, 1.0));
+
     m_mAdditionalReservedAreas.clear();
     m_dBlurLSNamespaces.clear();
-    m_dWorkspaceRules.clear();
+    m_vWorkspaceRules.clear();
     setDefaultAnimationVars(); // reset anims
     m_vDeclaredPlugins.clear();
-    m_dLayerRules.clear();
+    m_vLayerRules.clear();
     m_vFailedPluginConfigValues.clear();
     finalExecRequests.clear();
 
     // paths
-    configPaths.clear();
+    m_configPaths.clear();
     std::string mainConfigPath = getMainConfigPath();
     Debug::log(LOG, "Using config: {}", mainConfigPath);
-    configPaths.push_back(mainConfigPath);
+    m_configPaths.emplace_back(mainConfigPath);
 
     const auto RET = verifyConfigExists();
 
@@ -846,7 +914,10 @@ std::optional<std::string> CConfigManager::resetHLConfig() {
 
 void CConfigManager::postConfigReload(const Hyprlang::CParseResult& result) {
     static const auto PENABLEEXPLICIT     = CConfigValue<Hyprlang::INT>("render:explicit_sync");
+    static const auto PDISABLEAUTORELOAD  = CConfigValue<Hyprlang::INT>("misc:disable_autoreload");
     static int        prevEnabledExplicit = *PENABLEEXPLICIT;
+
+    g_pConfigWatcher->setWatchList(*PDISABLEAUTORELOAD ? std::vector<std::string>{} : m_configPaths);
 
     for (auto const& w : g_pCompositor->m_vWindows) {
         w->uncacheWindowDecos();
@@ -861,10 +932,11 @@ void CConfigManager::postConfigReload(const Hyprlang::CParseResult& result) {
         g_pInputManager->setPointerConfigs();
         g_pInputManager->setTouchDeviceConfigs();
         g_pInputManager->setTabletConfigs();
-    }
 
-    if (!isFirstLaunch)
         g_pHyprOpenGL->m_bReloadScreenShader = true;
+
+        g_pHyprOpenGL->ensureBackgroundTexturePresence();
+    }
 
     // parseError will be displayed next frame
 
@@ -874,14 +946,14 @@ void CConfigManager::postConfigReload(const Hyprlang::CParseResult& result) {
         m_szConfigErrors = "";
 
     if (result.error && !std::any_cast<Hyprlang::INT>(m_pConfig->getConfigValue("debug:suppress_errors")))
-        g_pHyprError->queueCreate(result.getError(), CColor(1.0, 50.0 / 255.0, 50.0 / 255.0, 1.0));
+        g_pHyprError->queueCreate(result.getError(), CHyprColor(1.0, 50.0 / 255.0, 50.0 / 255.0, 1.0));
     else if (std::any_cast<Hyprlang::INT>(m_pConfig->getConfigValue("autogenerated")) == 1)
         g_pHyprError->queueCreate(
-            "Warning: You're using an autogenerated config! (config file: " + getMainConfigPath() +
+            "Warning: You're using an autogenerated config! Edit the config file to get rid of this message. (config file: " + getMainConfigPath() +
                 " )\nSUPER+Q -> kitty (if it doesn't launch, make sure it's installed or choose a different terminal in the config)\nSUPER+M -> exit Hyprland",
-            CColor(1.0, 1.0, 70.0 / 255.0, 1.0));
+            CHyprColor(1.0, 1.0, 70.0 / 255.0, 1.0));
     else if (*PENABLEEXPLICIT != prevEnabledExplicit)
-        g_pHyprError->queueCreate("Warning: You changed the render:explicit_sync option, this requires you to restart Hyprland.", CColor(0.9, 0.76, 0.221, 1.0));
+        g_pHyprError->queueCreate("Warning: You changed the render:explicit_sync option, this requires you to restart Hyprland.", CHyprColor(0.9, 0.76, 0.221, 1.0));
     else
         g_pHyprError->destroy();
 
@@ -897,26 +969,16 @@ void CConfigManager::postConfigReload(const Hyprlang::CParseResult& result) {
     }
 
 #ifndef NO_XWAYLAND
-    const auto PENABLEXWAYLAND = std::any_cast<Hyprlang::INT>(m_pConfig->getConfigValue("xwayland:enabled"));
+    const auto PENABLEXWAYLAND      = std::any_cast<Hyprlang::INT>(m_pConfig->getConfigValue("xwayland:enabled"));
+    g_pCompositor->m_bWantsXwayland = PENABLEXWAYLAND;
     // enable/disable xwayland usage
-    if (!isFirstLaunch) {
-        bool prevEnabledXwayland = g_pCompositor->m_bEnableXwayland;
-        if (PENABLEXWAYLAND != prevEnabledXwayland) {
-            g_pCompositor->m_bEnableXwayland = PENABLEXWAYLAND;
-            if (PENABLEXWAYLAND) {
-                Debug::log(LOG, "xwayland has been enabled");
-            } else {
-                Debug::log(LOG, "xwayland has been disabled, cleaning up...");
-                for (auto& w : g_pCompositor->m_vWindows) {
-                    if (w->m_pXDGSurface || !w->m_bIsX11)
-                        continue;
-                    g_pCompositor->closeWindow(w);
-                }
-            }
-            g_pXWayland = std::make_unique<CXWayland>(g_pCompositor->m_bEnableXwayland);
-        }
+    if (!isFirstLaunch &&
+        g_pXWayland /* XWayland has to be initialized by CCompositor::initManagers for this to make sense, and it doesn't have to be (e.g. very early plugin load) */) {
+        bool prevEnabledXwayland = g_pXWayland->enabled();
+        if (g_pCompositor->m_bWantsXwayland != prevEnabledXwayland)
+            g_pXWayland = makeUnique<CXWayland>(g_pCompositor->m_bWantsXwayland);
     } else
-        g_pCompositor->m_bEnableXwayland = PENABLEXWAYLAND;
+        g_pCompositor->m_bWantsXwayland = PENABLEXWAYLAND;
 #endif
 
     if (!isFirstLaunch && !g_pCompositor->m_bUnsafeState)
@@ -926,8 +988,8 @@ void CConfigManager::postConfigReload(const Hyprlang::CParseResult& result) {
     for (auto const& w : g_pCompositor->m_vWorkspaces) {
         if (w->inert())
             continue;
-        g_pCompositor->updateWorkspaceWindows(w->m_iID);
-        g_pCompositor->updateWorkspaceWindowData(w->m_iID);
+        w->updateWindows();
+        w->updateWindowData();
     }
 
     // Update window border colors
@@ -939,7 +1001,8 @@ void CConfigManager::postConfigReload(const Hyprlang::CParseResult& result) {
     // manual crash
     if (std::any_cast<Hyprlang::INT>(m_pConfig->getConfigValue("debug:manual_crash")) && !m_bManualCrashInitiated) {
         m_bManualCrashInitiated = true;
-        g_pHyprNotificationOverlay->addNotification("Manual crash has been set up. Set debug:manual_crash back to 0 in order to crash the compositor.", CColor(0), 5000, ICON_INFO);
+        g_pHyprNotificationOverlay->addNotification("Manual crash has been set up. Set debug:manual_crash back to 0 in order to crash the compositor.", CHyprColor(0), 5000,
+                                                    ICON_INFO);
     } else if (m_bManualCrashInitiated && !std::any_cast<Hyprlang::INT>(m_pConfig->getConfigValue("debug:manual_crash"))) {
         // cowabunga it is
         g_pHyprRenderer->initiateManualCrash();
@@ -971,6 +1034,10 @@ void CConfigManager::postConfigReload(const Hyprlang::CParseResult& result) {
     // update plugins
     handlePluginLoads();
 
+    // update persistent workspaces
+    if (!isFirstLaunch)
+        ensurePersistentWorkspacesPresent();
+
     EMIT_HOOK_EVENT("configReloaded", nullptr);
     if (g_pEventManager)
         g_pEventManager->postEvent(SHyprIPCEvent{"configreloaded", ""});
@@ -978,16 +1045,13 @@ void CConfigManager::postConfigReload(const Hyprlang::CParseResult& result) {
 
 void CConfigManager::init() {
 
+    g_pConfigWatcher->setOnChange([this](const CConfigWatcher::SConfigWatchEvent& e) {
+        Debug::log(LOG, "CConfigManager: file {} modified, reloading", e.file);
+        reload();
+    });
+
     const std::string CONFIGPATH = getMainConfigPath();
     reload();
-
-    struct stat fileStat;
-    int         err = stat(CONFIGPATH.c_str(), &fileStat);
-    if (err != 0) {
-        Debug::log(WARN, "Error at statting config, error {}", errno);
-    }
-
-    configModifyTimes[CONFIGPATH] = fileStat.st_mtime;
 
     isFirstLaunch = false;
 }
@@ -1006,7 +1070,7 @@ std::string CConfigManager::parseKeyword(const std::string& COMMAND, const std::
 
     if (COMMAND.contains("explicit")) {
         if (*PENABLEEXPLICIT != prevEnabledExplicit)
-            g_pHyprError->queueCreate("Warning: You changed the render:explicit_sync option, this requires you to restart Hyprland.", CColor(0.9, 0.76, 0.221, 1.0));
+            g_pHyprError->queueCreate("Warning: You changed the render:explicit_sync option, this requires you to restart Hyprland.", CHyprColor(0.9, 0.76, 0.221, 1.0));
         else
             g_pHyprError->destroy();
     }
@@ -1018,7 +1082,7 @@ std::string CConfigManager::parseKeyword(const std::string& COMMAND, const std::
     if (std::any_cast<Hyprlang::INT>(m_pConfig->getConfigValue("debug:manual_crash")) && !m_bManualCrashInitiated) {
         m_bManualCrashInitiated = true;
         if (g_pHyprNotificationOverlay) {
-            g_pHyprNotificationOverlay->addNotification("Manual crash has been set up. Set debug:manual_crash back to 0 in order to crash the compositor.", CColor(0), 5000,
+            g_pHyprNotificationOverlay->addNotification("Manual crash has been set up. Set debug:manual_crash back to 0 in order to crash the compositor.", CHyprColor(0), 5000,
                                                         ICON_INFO);
         }
     } else if (m_bManualCrashInitiated && !std::any_cast<Hyprlang::INT>(m_pConfig->getConfigValue("debug:manual_crash"))) {
@@ -1027,37 +1091,6 @@ std::string CConfigManager::parseKeyword(const std::string& COMMAND, const std::
     }
 
     return RET.error ? RET.getError() : "";
-}
-
-void CConfigManager::tick() {
-    std::string CONFIGPATH = getMainConfigPath();
-    if (!std::filesystem::exists(CONFIGPATH)) {
-        Debug::log(ERR, "Config doesn't exist??");
-        return;
-    }
-
-    bool parse = false;
-
-    for (auto const& cf : configPaths) {
-        struct stat fileStat;
-        int         err = stat(cf.c_str(), &fileStat);
-        if (err != 0) {
-            Debug::log(WARN, "Error at ticking config at {}, error {}: {}", cf, err, strerror(err));
-            continue;
-        }
-
-        // check if we need to reload cfg
-        if (fileStat.st_mtime != configModifyTimes[cf] || m_bForceReload) {
-            parse                 = true;
-            configModifyTimes[cf] = fileStat.st_mtime;
-        }
-    }
-
-    if (parse) {
-        m_bForceReload = false;
-
-        reload();
-    }
 }
 
 Hyprlang::CConfigValue* CConfigManager::getConfigValueSafeDevice(const std::string& dev, const std::string& val, const std::string& fallback) {
@@ -1085,7 +1118,7 @@ Vector2D CConfigManager::getDeviceVec(const std::string& dev, const std::string&
 }
 
 std::string CConfigManager::getDeviceString(const std::string& dev, const std::string& v, const std::string& fallback) {
-    const auto VAL = std::string{std::any_cast<Hyprlang::STRING>(getConfigValueSafeDevice(dev, v, fallback)->getValue())};
+    auto VAL = std::string{std::any_cast<Hyprlang::STRING>(getConfigValueSafeDevice(dev, v, fallback)->getValue())};
 
     if (VAL == STRVAL_EMPTY)
         return "";
@@ -1135,7 +1168,7 @@ SMonitorRule CConfigManager::getMonitorRuleFor(const PHLMONITOR PMONITOR) {
         return rule;
     };
 
-    for (auto const& r : m_dMonitorRules | std::views::reverse) {
+    for (auto const& r : m_vMonitorRules | std::views::reverse) {
         if (PMONITOR->matchesStaticSelector(r.name)) {
             return applyWlrOutputConfig(r);
         }
@@ -1143,7 +1176,7 @@ SMonitorRule CConfigManager::getMonitorRuleFor(const PHLMONITOR PMONITOR) {
 
     Debug::log(WARN, "No rule found for {}, trying to use the first.", PMONITOR->szName);
 
-    for (auto const& r : m_dMonitorRules) {
+    for (auto const& r : m_vMonitorRules) {
         if (r.name.empty()) {
             return applyWlrOutputConfig(r);
         }
@@ -1160,7 +1193,7 @@ SMonitorRule CConfigManager::getMonitorRuleFor(const PHLMONITOR PMONITOR) {
 
 SWorkspaceRule CConfigManager::getWorkspaceRuleFor(PHLWORKSPACE pWorkspace) {
     SWorkspaceRule mergedRule{};
-    for (auto const& rule : m_dWorkspaceRules) {
+    for (auto const& rule : m_vWorkspaceRules) {
         if (!pWorkspace->matchesStaticSelector(rule.workspaceString))
             continue;
 
@@ -1212,19 +1245,16 @@ SWorkspaceRule CConfigManager::mergeWorkspaceRules(const SWorkspaceRule& rule1, 
     return mergedRule;
 }
 
-std::vector<SWindowRule> CConfigManager::getMatchingRules(PHLWINDOW pWindow, bool dynamic, bool shadowExec) {
+std::vector<SP<CWindowRule>> CConfigManager::getMatchingRules(PHLWINDOW pWindow, bool dynamic, bool shadowExec) {
     if (!valid(pWindow))
-        return std::vector<SWindowRule>();
+        return std::vector<SP<CWindowRule>>();
 
     // if the window is unmapped, don't process exec rules yet.
     shadowExec = shadowExec || !pWindow->m_bIsMapped;
 
-    std::vector<SWindowRule> returns;
+    std::vector<SP<CWindowRule>> returns;
 
-    std::string              title      = pWindow->m_szTitle;
-    std::string              appidclass = pWindow->m_szClass;
-
-    Debug::log(LOG, "Searching for matching rules for {} (title: {})", appidclass, title);
+    Debug::log(LOG, "Searching for matching rules for {} (title: {})", pWindow->m_szClass, pWindow->m_szTitle);
 
     // since some rules will be applied later, we need to store some flags
     bool hasFloating   = pWindow->m_bIsFloating;
@@ -1233,88 +1263,52 @@ std::vector<SWindowRule> CConfigManager::getMatchingRules(PHLWINDOW pWindow, boo
     // local tags for dynamic tag rule match
     auto tags = pWindow->m_tags;
 
-    for (auto const& rule : m_dWindowRules) {
+    for (auto const& rule : m_vWindowRules) {
         // check if we have a matching rule
-        if (!rule.v2) {
+        if (!rule->v2) {
             try {
-                if (rule.szValue.starts_with("tag:") && !tags.isTagged(rule.szValue.substr(4)))
+                if (rule->szValue.starts_with("tag:") && !tags.isTagged(rule->szValue.substr(4)))
                     continue;
 
-                if (rule.szValue.starts_with("title:")) {
-                    std::regex RULECHECK(rule.szValue.substr(6));
+                if (rule->szValue.starts_with("title:") && !rule->rV1Regex.passes(pWindow->m_szTitle))
+                    continue;
 
-                    if (!std::regex_search(title, RULECHECK))
-                        continue;
-                } else {
-                    std::regex classCheck(rule.szValue);
+                if (!rule->rV1Regex.passes(pWindow->m_szClass))
+                    continue;
 
-                    if (!std::regex_search(appidclass, classCheck))
-                        continue;
-                }
             } catch (...) {
-                Debug::log(ERR, "Regex error at {}", rule.szValue);
+                Debug::log(ERR, "Regex error at {}", rule->szValue);
                 continue;
             }
         } else {
             try {
-                if (!rule.szTag.empty() && !tags.isTagged(rule.szTag))
-                    continue;
-
-                if (!rule.szClass.empty()) {
-                    std::regex RULECHECK(rule.szClass);
-
-                    if (!std::regex_search(appidclass, RULECHECK))
+                if (rule->bX11 != -1) {
+                    if (pWindow->m_bIsX11 != rule->bX11)
                         continue;
                 }
 
-                if (!rule.szTitle.empty()) {
-                    std::regex RULECHECK(rule.szTitle);
-
-                    if (!std::regex_search(title, RULECHECK))
+                if (rule->bFloating != -1) {
+                    if (hasFloating != rule->bFloating)
                         continue;
                 }
 
-                if (!rule.szInitialTitle.empty()) {
-                    std::regex RULECHECK(rule.szInitialTitle);
-
-                    if (!std::regex_search(pWindow->m_szInitialTitle, RULECHECK))
+                if (rule->bFullscreen != -1) {
+                    if (hasFullscreen != rule->bFullscreen)
                         continue;
                 }
 
-                if (!rule.szInitialClass.empty()) {
-                    std::regex RULECHECK(rule.szInitialClass);
-
-                    if (!std::regex_search(pWindow->m_szInitialClass, RULECHECK))
+                if (rule->bPinned != -1) {
+                    if (pWindow->m_bPinned != rule->bPinned)
                         continue;
                 }
 
-                if (rule.bX11 != -1) {
-                    if (pWindow->m_bIsX11 != rule.bX11)
+                if (rule->bFocus != -1) {
+                    if (rule->bFocus != (g_pCompositor->m_pLastWindow.lock() == pWindow))
                         continue;
                 }
 
-                if (rule.bFloating != -1) {
-                    if (hasFloating != rule.bFloating)
-                        continue;
-                }
-
-                if (rule.bFullscreen != -1) {
-                    if (hasFullscreen != rule.bFullscreen)
-                        continue;
-                }
-
-                if (rule.bPinned != -1) {
-                    if (pWindow->m_bPinned != rule.bPinned)
-                        continue;
-                }
-
-                if (rule.bFocus != -1) {
-                    if (rule.bFocus != (g_pCompositor->m_pLastWindow.lock() == pWindow))
-                        continue;
-                }
-
-                if (!rule.szFullscreenState.empty()) {
-                    const auto ARGS = CVarList(rule.szFullscreenState, 2, ' ');
+                if (!rule->szFullscreenState.empty()) {
+                    const auto ARGS = CVarList(rule->szFullscreenState, 2, ' ');
                     //
                     std::optional<eFullscreenMode> internalMode, clientMode;
 
@@ -1339,46 +1333,62 @@ std::vector<SWindowRule> CConfigManager::getMatchingRules(PHLWINDOW pWindow, boo
                         continue;
                 }
 
-                if (!rule.szOnWorkspace.empty()) {
+                if (!rule->szOnWorkspace.empty()) {
                     const auto PWORKSPACE = pWindow->m_pWorkspace;
-                    if (!PWORKSPACE || !PWORKSPACE->matchesStaticSelector(rule.szOnWorkspace))
+                    if (!PWORKSPACE || !PWORKSPACE->matchesStaticSelector(rule->szOnWorkspace))
                         continue;
                 }
 
-                if (!rule.szWorkspace.empty()) {
+                if (!rule->szWorkspace.empty()) {
                     const auto PWORKSPACE = pWindow->m_pWorkspace;
 
                     if (!PWORKSPACE)
                         continue;
 
-                    if (rule.szWorkspace.starts_with("name:")) {
-                        if (PWORKSPACE->m_szName != rule.szWorkspace.substr(5))
+                    if (rule->szWorkspace.starts_with("name:")) {
+                        if (PWORKSPACE->m_szName != rule->szWorkspace.substr(5))
                             continue;
                     } else {
                         // number
-                        if (!isNumber(rule.szWorkspace))
+                        if (!isNumber(rule->szWorkspace))
                             throw std::runtime_error("szWorkspace not name: or number");
 
-                        const int64_t ID = std::stoll(rule.szWorkspace);
+                        const int64_t ID = std::stoll(rule->szWorkspace);
 
                         if (PWORKSPACE->m_iID != ID)
                             continue;
                     }
                 }
+
+                if (!rule->szTag.empty() && !tags.isTagged(rule->szTag))
+                    continue;
+
+                if (!rule->szClass.empty() && !rule->rClass.passes(pWindow->m_szClass))
+                    continue;
+
+                if (!rule->szTitle.empty() && !rule->rTitle.passes(pWindow->m_szTitle))
+                    continue;
+
+                if (!rule->szInitialTitle.empty() && !rule->rInitialTitle.passes(pWindow->m_szInitialTitle))
+                    continue;
+
+                if (!rule->szInitialClass.empty() && !rule->rInitialClass.passes(pWindow->m_szInitialClass))
+                    continue;
+
             } catch (std::exception& e) {
-                Debug::log(ERR, "Regex error at {} ({})", rule.szValue, e.what());
+                Debug::log(ERR, "Regex error at {} ({})", rule->szValue, e.what());
                 continue;
             }
         }
 
         // applies. Read the rule and behave accordingly
-        Debug::log(LOG, "Window rule {} -> {} matched {}", rule.szRule, rule.szValue, pWindow);
+        Debug::log(LOG, "Window rule {} -> {} matched {}", rule->szRule, rule->szValue, pWindow);
 
-        returns.push_back(rule);
+        returns.emplace_back(rule);
 
         // apply tag with local tags
-        if (rule.szRule.starts_with("tag")) {
-            CVarList vars{rule.szRule, 0, 's', true};
+        if (rule->ruleType == CWindowRule::RULE_TAG) {
+            CVarList vars{rule->szRule, 0, 's', true};
             if (vars.size() == 2 && vars[0] == "tag")
                 tags.applyTag(vars[1], true);
         }
@@ -1386,9 +1396,9 @@ std::vector<SWindowRule> CConfigManager::getMatchingRules(PHLWINDOW pWindow, boo
         if (dynamic)
             continue;
 
-        if (rule.szRule == "float")
+        if (rule->szRule == "float")
             hasFloating = true;
-        else if (rule.szRule == "fullscreen")
+        else if (rule->szRule == "fullscreen")
             hasFullscreen = true;
     }
 
@@ -1400,41 +1410,36 @@ std::vector<SWindowRule> CConfigManager::getMatchingRules(PHLWINDOW pWindow, boo
 
     for (auto const& er : execRequestedRules) {
         if (std::ranges::any_of(PIDs, [&](const auto& pid) { return pid == er.iPid; })) {
-            returns.push_back({er.szRule, "execRule"});
+            returns.emplace_back(makeShared<CWindowRule>(er.szRule, "", false, true));
             anyExecFound = true;
         }
     }
 
     if (anyExecFound && !shadowExec) // remove exec rules to unclog searches in the future, why have the garbage here.
-        execRequestedRules.erase(std::remove_if(execRequestedRules.begin(), execRequestedRules.end(),
-                                                [&](const SExecRequestedRule& other) { return std::ranges::any_of(PIDs, [&](const auto& pid) { return pid == other.iPid; }); }));
+        std::erase_if(execRequestedRules, [&](const SExecRequestedRule& other) { return std::ranges::any_of(PIDs, [&](const auto& pid) { return pid == other.iPid; }); });
 
     return returns;
 }
 
-std::vector<SLayerRule> CConfigManager::getMatchingRules(PHLLS pLS) {
-    std::vector<SLayerRule> returns;
+std::vector<SP<CLayerRule>> CConfigManager::getMatchingRules(PHLLS pLS) {
+    std::vector<SP<CLayerRule>> returns;
 
     if (!pLS->layerSurface || pLS->fadingOut)
         return returns;
 
-    for (auto const& lr : m_dLayerRules) {
-        if (lr.targetNamespace.starts_with("address:0x")) {
-            if (std::format("address:0x{:x}", (uintptr_t)pLS.get()) != lr.targetNamespace)
+    for (auto const& lr : m_vLayerRules) {
+        if (lr->targetNamespace.starts_with("address:0x")) {
+            if (std::format("address:0x{:x}", (uintptr_t)pLS.get()) != lr->targetNamespace)
                 continue;
-        } else {
-            std::regex NSCHECK(lr.targetNamespace);
-
-            if (!std::regex_search(pLS->layerSurface->layerNamespace, NSCHECK))
-                continue;
-        }
+        } else if (!lr->targetNamespaceRegex.passes(pLS->layerSurface->layerNamespace))
+            continue;
 
         // hit
-        returns.push_back(lr);
+        returns.emplace_back(lr);
     }
 
     if (shouldBlurLS(pLS->layerSurface->layerNamespace))
-        returns.push_back({pLS->layerSurface->layerNamespace, "blur"});
+        returns.emplace_back(makeShared<CLayerRule>(pLS->layerSurface->layerNamespace, "blur"));
 
     return returns;
 }
@@ -1456,7 +1461,7 @@ void CConfigManager::dispatchExecOnce() {
     isLaunchingExecOnce = true;
 
     for (auto const& c : firstExecRequests) {
-        handleRawExec("", c);
+        c.withRules ? handleExec("", c.exec) : handleRawExec("", c.exec);
     }
 
     firstExecRequests.clear(); // free some kb of memory :P
@@ -1490,22 +1495,6 @@ void CConfigManager::dispatchExecShutdown() {
     handleExecShutdown("", "hyprctl dispatch exit");
 }
 
-void CConfigManager::appendMonitorRule(const SMonitorRule& r) {
-    m_dMonitorRules.emplace_back(r);
-}
-
-bool CConfigManager::replaceMonitorRule(const SMonitorRule& newrule) {
-    // Looks for an existing monitor rule (compared by name).
-    // If the rule exists, it is replaced with the input rule.
-    for (auto& r : m_dMonitorRules) {
-        if (r.name == newrule.name) {
-            r = newrule;
-            return true;
-        }
-    }
-    return false;
-}
-
 void CConfigManager::performMonitorReload() {
 
     bool overAgain = false;
@@ -1516,7 +1505,7 @@ void CConfigManager::performMonitorReload() {
 
         auto rule = getMonitorRuleFor(m);
 
-        if (!g_pHyprRenderer->applyMonitorRule(m, &rule)) {
+        if (!m->applyMonitorRule(&rule)) {
             overAgain = true;
             break;
         }
@@ -1574,7 +1563,7 @@ void CConfigManager::ensureMonitorStatus() {
         auto rule = getMonitorRuleFor(rm);
 
         if (rule.disabled == rm->m_bEnabled)
-            g_pHyprRenderer->applyMonitorRule(rm, &rule);
+            rm->applyMonitorRule(&rule);
     }
 }
 
@@ -1657,12 +1646,12 @@ void CConfigManager::ensureVRR(PHLMONITOR pMonitor) {
     }
 }
 
-SAnimationPropertyConfig* CConfigManager::getAnimationPropertyConfig(const std::string& name) {
-    return &animationConfig[name];
+SP<SAnimationPropertyConfig> CConfigManager::getAnimationPropertyConfig(const std::string& name) {
+    return m_AnimationTree.getConfig(name);
 }
 
 void CConfigManager::addParseError(const std::string& err) {
-    g_pHyprError->queueCreate(err + "\nHyprland may not work correctly.", CColor(1.0, 50.0 / 255.0, 50.0 / 255.0, 1.0));
+    g_pHyprError->queueCreate(err + "\nHyprland may not work correctly.", CHyprColor(1.0, 50.0 / 255.0, 50.0 / 255.0, 1.0));
 }
 
 PHLMONITOR CConfigManager::getBoundMonitorForWS(const std::string& wsname) {
@@ -1674,7 +1663,7 @@ PHLMONITOR CConfigManager::getBoundMonitorForWS(const std::string& wsname) {
 }
 
 std::string CConfigManager::getBoundMonitorStringForWS(const std::string& wsname) {
-    for (auto const& wr : m_dWorkspaceRules) {
+    for (auto const& wr : m_vWorkspaceRules) {
         const auto WSNAME = wr.workspaceName.starts_with("name:") ? wr.workspaceName.substr(5) : wr.workspaceName;
 
         if (WSNAME == wsname)
@@ -1684,8 +1673,8 @@ std::string CConfigManager::getBoundMonitorStringForWS(const std::string& wsname
     return "";
 }
 
-const std::deque<SWorkspaceRule>& CConfigManager::getAllWorkspaceRules() {
-    return m_dWorkspaceRules;
+const std::vector<SWorkspaceRule>& CConfigManager::getAllWorkspaceRules() {
+    return m_vWorkspaceRules;
 }
 
 void CConfigManager::addExecRule(const SExecRequestedRule& rule) {
@@ -1693,7 +1682,7 @@ void CConfigManager::addExecRule(const SExecRequestedRule& rule) {
 }
 
 void CConfigManager::handlePluginLoads() {
-    if (g_pPluginSystem == nullptr)
+    if (!g_pPluginSystem)
         return;
 
     bool pluginsChanged = false;
@@ -1703,17 +1692,16 @@ void CConfigManager::handlePluginLoads() {
         std::stringstream error;
         error << "Failed to load the following plugins:";
 
-        for (auto path : failedPlugins) {
+        for (const auto& path : failedPlugins) {
             error << "\n" << path;
         }
 
-        g_pHyprError->queueCreate(error.str(), CColor(1.0, 50.0 / 255.0, 50.0 / 255.0, 1.0));
+        g_pHyprError->queueCreate(error.str(), CHyprColor(1.0, 50.0 / 255.0, 50.0 / 255.0, 1.0));
     }
 
     if (pluginsChanged) {
         g_pHyprError->destroy();
-        m_bForceReload = true;
-        tick();
+        reload();
     }
 }
 
@@ -1721,12 +1709,8 @@ ICustomConfigValueData::~ICustomConfigValueData() {
     ; // empty
 }
 
-std::unordered_map<std::string, SAnimationPropertyConfig> CConfigManager::getAnimationConfig() {
-    return animationConfig;
-}
-
-void onPluginLoadUnload(const std::string& name, bool load) {
-    //
+const std::unordered_map<std::string, SP<SAnimationPropertyConfig>>& CConfigManager::getAnimationConfig() {
+    return m_AnimationTree.getFullConfig();
 }
 
 void CConfigManager::addPluginConfigVar(HANDLE handle, const std::string& name, const Hyprlang::CConfigValue& value) {
@@ -1763,7 +1747,7 @@ void CConfigManager::removePluginConfig(HANDLE handle) {
 }
 
 std::string CConfigManager::getDefaultWorkspaceFor(const std::string& name) {
-    for (auto other = m_dWorkspaceRules.begin(); other != m_dWorkspaceRules.end(); ++other) {
+    for (auto other = m_vWorkspaceRules.begin(); other != m_vWorkspaceRules.end(); ++other) {
         if (other->isDefault) {
             if (other->monitor == name)
                 return other->workspaceString;
@@ -1779,7 +1763,17 @@ std::string CConfigManager::getDefaultWorkspaceFor(const std::string& name) {
 
 std::optional<std::string> CConfigManager::handleRawExec(const std::string& command, const std::string& args) {
     if (isFirstLaunch) {
-        firstExecRequests.push_back(args);
+        firstExecRequests.push_back({args, false});
+        return {};
+    }
+
+    g_pKeybindManager->spawnRaw(args);
+    return {};
+}
+
+std::optional<std::string> CConfigManager::handleExec(const std::string& command, const std::string& args) {
+    if (isFirstLaunch) {
+        firstExecRequests.push_back({args, true});
         return {};
     }
 
@@ -1789,7 +1783,14 @@ std::optional<std::string> CConfigManager::handleRawExec(const std::string& comm
 
 std::optional<std::string> CConfigManager::handleExecOnce(const std::string& command, const std::string& args) {
     if (isFirstLaunch)
-        firstExecRequests.push_back(args);
+        firstExecRequests.push_back({args, true});
+
+    return {};
+}
+
+std::optional<std::string> CConfigManager::handleExecRawOnce(const std::string& command, const std::string& args) {
+    if (isFirstLaunch)
+        firstExecRequests.push_back({args, false});
 
     return {};
 }
@@ -1881,7 +1882,7 @@ std::optional<std::string> CConfigManager::handleMonitor(const std::string& comm
             const auto TRANSFORM = (wl_output_transform)TSF;
 
             // overwrite if exists
-            for (auto& r : m_dMonitorRules) {
+            for (auto& r : m_vMonitorRules) {
                 if (r.name == newrule.name) {
                     r.transform = TRANSFORM;
                     return {};
@@ -1906,9 +1907,9 @@ std::optional<std::string> CConfigManager::handleMonitor(const std::string& comm
             return "parse error: curitem bogus";
         }
 
-        std::erase_if(m_dMonitorRules, [&](const auto& other) { return other.name == newrule.name; });
+        std::erase_if(m_vMonitorRules, [&](const auto& other) { return other.name == newrule.name; });
 
-        m_dMonitorRules.push_back(newrule);
+        m_vMonitorRules.push_back(newrule);
 
         return {};
     }
@@ -1941,7 +1942,7 @@ std::optional<std::string> CConfigManager::handleMonitor(const std::string& comm
     if (ARGS[2].starts_with("auto")) {
         newrule.offset = Vector2D(-INT32_MAX, -INT32_MAX);
         // If this is the first monitor rule needs to be on the right.
-        if (ARGS[2] == "auto-right" || ARGS[2] == "auto" || m_dMonitorRules.empty())
+        if (ARGS[2] == "auto-right" || ARGS[2] == "auto" || m_vMonitorRules.empty())
             newrule.autoDir = eAutoDirs::DIR_AUTO_RIGHT;
         else if (ARGS[2] == "auto-left")
             newrule.autoDir = eAutoDirs::DIR_AUTO_LEFT;
@@ -2024,7 +2025,7 @@ std::optional<std::string> CConfigManager::handleMonitor(const std::string& comm
             wsRule.workspaceId     = id;
             wsRule.workspaceName   = name;
 
-            m_dWorkspaceRules.emplace_back(wsRule);
+            m_vWorkspaceRules.emplace_back(wsRule);
             argno++;
         } else {
             Debug::log(ERR, "Config error: invalid monitor syntax at \"{}\"", ARGS[argno]);
@@ -2034,9 +2035,9 @@ std::optional<std::string> CConfigManager::handleMonitor(const std::string& comm
         argno++;
     }
 
-    std::erase_if(m_dMonitorRules, [&](const auto& other) { return other.name == newrule.name; });
+    std::erase_if(m_vMonitorRules, [&](const auto& other) { return other.name == newrule.name; });
 
-    m_dMonitorRules.push_back(newrule);
+    m_vMonitorRules.push_back(newrule);
 
     if (error.empty())
         return {};
@@ -2072,17 +2073,6 @@ std::optional<std::string> CConfigManager::handleBezier(const std::string& comma
     return {};
 }
 
-void CConfigManager::setAnimForChildren(SAnimationPropertyConfig* const ANIM) {
-    for (auto& [name, anim] : animationConfig) {
-        if (anim.pParentAnimation == ANIM && !anim.overridden) {
-            // if a child isnt overridden, set the values of the parent
-            anim.pValues = ANIM->pValues;
-
-            setAnimForChildren(&anim);
-        }
-    }
-};
-
 std::optional<std::string> CConfigManager::handleAnimation(const std::string& command, const std::string& args) {
     const auto ARGS = CVarList(args);
 
@@ -2091,58 +2081,51 @@ std::optional<std::string> CConfigManager::handleAnimation(const std::string& co
     // anim name
     const auto ANIMNAME = ARGS[0];
 
-    const auto PANIM = animationConfig.find(ANIMNAME);
-
-    if (PANIM == animationConfig.end())
+    if (!m_AnimationTree.nodeExists(ANIMNAME))
         return "no such animation";
 
-    PANIM->second.overridden = true;
-    PANIM->second.pValues    = &PANIM->second;
-
     // This helper casts strings like "1", "true", "off", "yes"... to int.
-    int64_t enabledInt = configStringToInt(ARGS[1]) == 1;
+    int64_t enabledInt = configStringToInt(ARGS[1]).value_or(0) == 1;
 
     // Checking that the int is 1 or 0 because the helper can return integers out of range.
     if (enabledInt != 0 && enabledInt != 1)
         return "invalid animation on/off state";
 
-    PANIM->second.internalEnabled = configStringToInt(ARGS[1]) == 1;
-
-    if (PANIM->second.internalEnabled) {
-        // speed
-        if (isNumber(ARGS[2], true)) {
-            PANIM->second.internalSpeed = std::stof(ARGS[2]);
-
-            if (PANIM->second.internalSpeed <= 0) {
-                PANIM->second.internalSpeed = 1.f;
-                return "invalid speed";
-            }
-        } else {
-            PANIM->second.internalSpeed = 10.f;
-            return "invalid speed";
-        }
-
-        // curve
-        PANIM->second.internalBezier = ARGS[3];
-
-        if (!g_pAnimationManager->bezierExists(ARGS[3])) {
-            PANIM->second.internalBezier = "default";
-            return "no such bezier";
-        }
-
-        // style
-        PANIM->second.internalStyle = ARGS[4];
-
-        if (ARGS[4] != "") {
-            const auto ERR = g_pAnimationManager->styleValidInConfigVar(ANIMNAME, ARGS[4]);
-
-            if (ERR != "")
-                return ERR;
-        }
+    if (!enabledInt) {
+        m_AnimationTree.setConfigForNode(ANIMNAME, enabledInt, 1, "default");
+        return {};
     }
 
-    // now, check for children, recursively
-    setAnimForChildren(&PANIM->second);
+    float speed = -1;
+
+    // speed
+    if (isNumber(ARGS[2], true)) {
+        speed = std::stof(ARGS[2]);
+
+        if (speed <= 0) {
+            speed = 1.f;
+            return "invalid speed";
+        }
+    } else {
+        speed = 10.f;
+        return "invalid speed";
+    }
+
+    std::string bezierName = ARGS[3];
+    m_AnimationTree.setConfigForNode(ANIMNAME, enabledInt, speed, ARGS[3], ARGS[4]);
+
+    if (!g_pAnimationManager->bezierExists(bezierName)) {
+        const auto PANIMNODE      = m_AnimationTree.getConfig(ANIMNAME);
+        PANIMNODE->internalBezier = "default";
+        return "no such bezier";
+    }
+
+    if (ARGS[4] != "") {
+        auto ERR = g_pAnimationManager->styleValidInConfigVar(ANIMNAME, ARGS[4]);
+
+        if (ERR != "")
+            return ERR;
+    }
 
     return {};
 }
@@ -2223,10 +2206,10 @@ std::optional<std::string> CConfigManager::handleBind(const std::string& command
     std::set<xkb_keysym_t> MODS;
 
     if (multiKey) {
-        for (auto splitKey : CVarList(ARGS[1], 8, '&')) {
+        for (const auto& splitKey : CVarList(ARGS[1], 8, '&')) {
             KEYSYMS.insert(xkb_keysym_from_name(splitKey.c_str(), XKB_KEYSYM_CASE_INSENSITIVE));
         }
-        for (auto splitMod : CVarList(ARGS[0], 8, '&')) {
+        for (const auto& splitMod : CVarList(ARGS[0], 8, '&')) {
             MODS.insert(xkb_keysym_from_name(splitMod.c_str(), XKB_KEYSYM_CASE_INSENSITIVE));
         }
     }
@@ -2287,28 +2270,6 @@ std::optional<std::string> CConfigManager::handleUnbind(const std::string& comma
     return {};
 }
 
-bool windowRuleValid(const std::string& RULE) {
-    static const auto rules = std::unordered_set<std::string>{
-        "float", "fullscreen", "maximize", "noinitialfocus", "pin", "stayfocused", "tile", "renderunfocused",
-    };
-    static const auto rulesPrefix = std::vector<std::string>{
-        "animation", "bordercolor", "bordersize", "center", "fullscreenstate", "group", "idleinhibit",   "maxsize", "minsize",   "monitor",
-        "move",      "opacity",     "plugin:",    "pseudo", "rounding",        "size",  "suppressevent", "tag",     "workspace", "xray",
-    };
-
-    const auto VALS = CVarList(RULE, 2, ' ');
-    return rules.contains(RULE) || std::any_of(rulesPrefix.begin(), rulesPrefix.end(), [&RULE](auto prefix) { return RULE.starts_with(prefix); }) ||
-        (g_pConfigManager->mbWindowProperties.find(VALS[0]) != g_pConfigManager->mbWindowProperties.end()) ||
-        (g_pConfigManager->miWindowProperties.find(VALS[0]) != g_pConfigManager->miWindowProperties.end());
-}
-
-bool layerRuleValid(const std::string& RULE) {
-    static const auto rules       = std::unordered_set<std::string>{"noanim", "blur", "blurpopups", "dimaround"};
-    static const auto rulesPrefix = std::vector<std::string>{"ignorealpha", "ignorezero", "xray", "animation", "order"};
-
-    return rules.contains(RULE) || std::any_of(rulesPrefix.begin(), rulesPrefix.end(), [&RULE](auto prefix) { return RULE.starts_with(prefix); });
-}
-
 std::optional<std::string> CConfigManager::handleWindowRule(const std::string& command, const std::string& value) {
     const auto RULE  = trim(value.substr(0, value.find_first_of(',')));
     const auto VALUE = trim(value.substr(value.find_first_of(',') + 1));
@@ -2318,20 +2279,24 @@ std::optional<std::string> CConfigManager::handleWindowRule(const std::string& c
         return "empty rule?";
 
     if (RULE == "unset") {
-        std::erase_if(m_dWindowRules, [&](const SWindowRule& other) { return other.szValue == VALUE; });
+        std::erase_if(m_vWindowRules, [&](const auto& other) { return other->szValue == VALUE; });
         return {};
     }
 
+    auto newRule = makeShared<CWindowRule>(RULE, VALUE, false);
+
     // verify we support a rule
-    if (!windowRuleValid(RULE)) {
+    if (newRule->ruleType == CWindowRule::RULE_INVALID) {
         Debug::log(ERR, "Invalid rule found: {}", RULE);
         return "Invalid rule: " + RULE;
     }
 
+    newRule->rV1Regex = {VALUE.starts_with("title:") ? VALUE.substr(6) : VALUE};
+
     if (RULE.starts_with("size") || RULE.starts_with("maxsize") || RULE.starts_with("minsize"))
-        m_dWindowRules.push_front({RULE, VALUE});
+        m_vWindowRules.insert(m_vWindowRules.begin(), newRule);
     else
-        m_dWindowRules.push_back({RULE, VALUE});
+        m_vWindowRules.emplace_back(newRule);
 
     return {};
 }
@@ -2345,16 +2310,20 @@ std::optional<std::string> CConfigManager::handleLayerRule(const std::string& co
         return "empty rule?";
 
     if (RULE == "unset") {
-        std::erase_if(m_dLayerRules, [&](const SLayerRule& other) { return other.targetNamespace == VALUE; });
+        std::erase_if(m_vLayerRules, [&](const auto& other) { return other->targetNamespace == VALUE; });
         return {};
     }
 
-    if (!layerRuleValid(RULE)) {
+    auto rule = makeShared<CLayerRule>(RULE, VALUE);
+
+    if (rule->ruleType == CLayerRule::RULE_INVALID) {
         Debug::log(ERR, "Invalid rule found: {}", RULE);
         return "Invalid rule found: " + RULE;
     }
 
-    m_dLayerRules.push_back({VALUE, RULE});
+    rule->targetNamespaceRegex = {VALUE};
+
+    m_vLayerRules.emplace_back(rule);
 
     for (auto const& m : g_pCompositor->m_vMonitors)
         for (auto const& lsl : m->m_aLayerSurfaceLayers)
@@ -2368,17 +2337,14 @@ std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string&
     const auto RULE  = trim(value.substr(0, value.find_first_of(',')));
     const auto VALUE = value.substr(value.find_first_of(',') + 1);
 
-    if (!windowRuleValid(RULE) && RULE != "unset") {
+    auto       rule = makeShared<CWindowRule>(RULE, VALUE, true);
+
+    if (rule->ruleType == CWindowRule::RULE_INVALID && RULE != "unset") {
         Debug::log(ERR, "Invalid rulev2 found: {}", RULE);
         return "Invalid rulev2 found: " + RULE;
     }
 
     // now we estract shit from the value
-    SWindowRule rule;
-    rule.v2      = true;
-    rule.szRule  = RULE;
-    rule.szValue = VALUE;
-
     const auto TAGPOS             = VALUE.find("tag:");
     const auto TITLEPOS           = VALUE.find("title:");
     const auto CLASSPOS           = VALUE.find("class:");
@@ -2453,86 +2419,94 @@ std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string&
     };
 
     if (TAGPOS != std::string::npos)
-        rule.szTag = extract(TAGPOS + 4);
+        rule->szTag = extract(TAGPOS + 4);
 
-    if (CLASSPOS != std::string::npos)
-        rule.szClass = extract(CLASSPOS + 6);
+    if (CLASSPOS != std::string::npos) {
+        rule->szClass = extract(CLASSPOS + 6);
+        rule->rClass  = {rule->szClass};
+    }
 
-    if (TITLEPOS != std::string::npos)
-        rule.szTitle = extract(TITLEPOS + 6);
+    if (TITLEPOS != std::string::npos) {
+        rule->szTitle = extract(TITLEPOS + 6);
+        rule->rTitle  = {rule->szTitle};
+    }
 
-    if (INITIALCLASSPOS != std::string::npos)
-        rule.szInitialClass = extract(INITIALCLASSPOS + 13);
+    if (INITIALCLASSPOS != std::string::npos) {
+        rule->szInitialClass = extract(INITIALCLASSPOS + 13);
+        rule->rInitialClass  = {rule->szInitialClass};
+    }
 
-    if (INITIALTITLEPOS != std::string::npos)
-        rule.szInitialTitle = extract(INITIALTITLEPOS + 13);
+    if (INITIALTITLEPOS != std::string::npos) {
+        rule->szInitialTitle = extract(INITIALTITLEPOS + 13);
+        rule->rInitialTitle  = {rule->szInitialTitle};
+    }
 
     if (X11POS != std::string::npos)
-        rule.bX11 = extract(X11POS + 9) == "1" ? 1 : 0;
+        rule->bX11 = extract(X11POS + 9) == "1" ? 1 : 0;
 
     if (FLOATPOS != std::string::npos)
-        rule.bFloating = extract(FLOATPOS + 9) == "1" ? 1 : 0;
+        rule->bFloating = extract(FLOATPOS + 9) == "1" ? 1 : 0;
 
     if (FULLSCREENPOS != std::string::npos)
-        rule.bFullscreen = extract(FULLSCREENPOS + 11) == "1" ? 1 : 0;
+        rule->bFullscreen = extract(FULLSCREENPOS + 11) == "1" ? 1 : 0;
 
     if (PINNEDPOS != std::string::npos)
-        rule.bPinned = extract(PINNEDPOS + 7) == "1" ? 1 : 0;
+        rule->bPinned = extract(PINNEDPOS + 7) == "1" ? 1 : 0;
 
     if (FULLSCREENSTATEPOS != std::string::npos)
-        rule.szFullscreenState = extract(FULLSCREENSTATEPOS + 16);
+        rule->szFullscreenState = extract(FULLSCREENSTATEPOS + 16);
 
     if (WORKSPACEPOS != std::string::npos)
-        rule.szWorkspace = extract(WORKSPACEPOS + 10);
+        rule->szWorkspace = extract(WORKSPACEPOS + 10);
 
     if (FOCUSPOS != std::string::npos)
-        rule.bFocus = extract(FOCUSPOS + 6) == "1" ? 1 : 0;
+        rule->bFocus = extract(FOCUSPOS + 6) == "1" ? 1 : 0;
 
     if (ONWORKSPACEPOS != std::string::npos)
-        rule.szOnWorkspace = extract(ONWORKSPACEPOS + 12);
+        rule->szOnWorkspace = extract(ONWORKSPACEPOS + 12);
 
     if (RULE == "unset") {
-        std::erase_if(m_dWindowRules, [&](const SWindowRule& other) {
-            if (!other.v2) {
-                return other.szClass == rule.szClass && !rule.szClass.empty();
-            } else {
-                if (!rule.szTag.empty() && rule.szTag != other.szTag)
+        std::erase_if(m_vWindowRules, [&](const auto& other) {
+            if (!other->v2)
+                return other->szClass == rule->szClass && !rule->szClass.empty();
+            else {
+                if (!rule->szTag.empty() && rule->szTag != other->szTag)
                     return false;
 
-                if (!rule.szClass.empty() && rule.szClass != other.szClass)
+                if (!rule->szClass.empty() && rule->szClass != other->szClass)
                     return false;
 
-                if (!rule.szTitle.empty() && rule.szTitle != other.szTitle)
+                if (!rule->szTitle.empty() && rule->szTitle != other->szTitle)
                     return false;
 
-                if (!rule.szInitialClass.empty() && rule.szInitialClass != other.szInitialClass)
+                if (!rule->szInitialClass.empty() && rule->szInitialClass != other->szInitialClass)
                     return false;
 
-                if (!rule.szInitialTitle.empty() && rule.szInitialTitle != other.szInitialTitle)
+                if (!rule->szInitialTitle.empty() && rule->szInitialTitle != other->szInitialTitle)
                     return false;
 
-                if (rule.bX11 != -1 && rule.bX11 != other.bX11)
+                if (rule->bX11 != -1 && rule->bX11 != other->bX11)
                     return false;
 
-                if (rule.bFloating != -1 && rule.bFloating != other.bFloating)
+                if (rule->bFloating != -1 && rule->bFloating != other->bFloating)
                     return false;
 
-                if (rule.bFullscreen != -1 && rule.bFullscreen != other.bFullscreen)
+                if (rule->bFullscreen != -1 && rule->bFullscreen != other->bFullscreen)
                     return false;
 
-                if (rule.bPinned != -1 && rule.bPinned != other.bPinned)
+                if (rule->bPinned != -1 && rule->bPinned != other->bPinned)
                     return false;
 
-                if (!rule.szFullscreenState.empty() && rule.szFullscreenState != other.szFullscreenState)
+                if (!rule->szFullscreenState.empty() && rule->szFullscreenState != other->szFullscreenState)
                     return false;
 
-                if (!rule.szWorkspace.empty() && rule.szWorkspace != other.szWorkspace)
+                if (!rule->szWorkspace.empty() && rule->szWorkspace != other->szWorkspace)
                     return false;
 
-                if (rule.bFocus != -1 && rule.bFocus != other.bFocus)
+                if (rule->bFocus != -1 && rule->bFocus != other->bFocus)
                     return false;
 
-                if (!rule.szOnWorkspace.empty() && rule.szOnWorkspace != other.szOnWorkspace)
+                if (!rule->szOnWorkspace.empty() && rule->szOnWorkspace != other->szOnWorkspace)
                     return false;
 
                 return true;
@@ -2542,9 +2516,9 @@ std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string&
     }
 
     if (RULE.starts_with("size") || RULE.starts_with("maxsize") || RULE.starts_with("minsize"))
-        m_dWindowRules.push_front(rule);
+        m_vWindowRules.insert(m_vWindowRules.begin(), rule);
     else
-        m_dWindowRules.push_back(rule);
+        m_vWindowRules.push_back(rule);
 
     return {};
 }
@@ -2553,9 +2527,8 @@ void CConfigManager::updateBlurredLS(const std::string& name, const bool forceBl
     const bool  BYADDRESS = name.starts_with("address:");
     std::string matchName = name;
 
-    if (BYADDRESS) {
+    if (BYADDRESS)
         matchName = matchName.substr(8);
-    }
 
     for (auto const& m : g_pCompositor->m_vMonitors) {
         for (auto const& lsl : m->m_aLayerSurfaceLayers) {
@@ -2614,7 +2587,14 @@ std::optional<std::string> CConfigManager::handleWorkspaceRules(const std::strin
     const static std::string ruleOnCreatedEmpty    = "on-created-empty:";
     const static auto        ruleOnCreatedEmptyLen = ruleOnCreatedEmpty.length();
 
-    auto                     assignRule = [&](std::string rule) -> std::optional<std::string> {
+#define CHECK_OR_THROW(expr)                                                                                                                                                       \
+                                                                                                                                                                                   \
+    auto X = expr;                                                                                                                                                                 \
+    if (!X) {                                                                                                                                                                      \
+        return "Failed parsing a workspace rule";                                                                                                                                  \
+    }
+
+    auto assignRule = [&](std::string rule) -> std::optional<std::string> {
         size_t delim = std::string::npos;
         if ((delim = rule.find("gapsin:")) != std::string::npos) {
             CVarList varlist = CVarList(rule.substr(delim + 7), 0, ' ');
@@ -2632,25 +2612,32 @@ std::optional<std::string> CConfigManager::handleWorkspaceRules(const std::strin
             try {
                 wsRule.borderSize = std::stoi(rule.substr(delim + 11));
             } catch (...) { return "Error parsing workspace rule bordersize: {}", rule.substr(delim + 11); }
-        else if ((delim = rule.find("border:")) != std::string::npos)
-            wsRule.noBorder = !configStringToInt(rule.substr(delim + 7));
-        else if ((delim = rule.find("shadow:")) != std::string::npos)
-            wsRule.noShadow = !configStringToInt(rule.substr(delim + 7));
-        else if ((delim = rule.find("rounding:")) != std::string::npos)
-            wsRule.noRounding = !configStringToInt(rule.substr(delim + 9));
-        else if ((delim = rule.find("decorate:")) != std::string::npos)
-            wsRule.decorate = configStringToInt(rule.substr(delim + 9));
-        else if ((delim = rule.find("monitor:")) != std::string::npos)
+        else if ((delim = rule.find("border:")) != std::string::npos) {
+            CHECK_OR_THROW(configStringToInt(rule.substr(delim + 7)))
+            wsRule.noBorder = !*X;
+        } else if ((delim = rule.find("shadow:")) != std::string::npos) {
+            CHECK_OR_THROW(configStringToInt(rule.substr(delim + 7)))
+            wsRule.noShadow = !*X;
+        } else if ((delim = rule.find("rounding:")) != std::string::npos) {
+            CHECK_OR_THROW(configStringToInt(rule.substr(delim + 9)))
+            wsRule.noRounding = !*X;
+        } else if ((delim = rule.find("decorate:")) != std::string::npos) {
+            CHECK_OR_THROW(configStringToInt(rule.substr(delim + 9)))
+            wsRule.decorate = *X;
+        } else if ((delim = rule.find("monitor:")) != std::string::npos)
             wsRule.monitor = rule.substr(delim + 8);
-        else if ((delim = rule.find("default:")) != std::string::npos)
-            wsRule.isDefault = configStringToInt(rule.substr(delim + 8));
-        else if ((delim = rule.find("persistent:")) != std::string::npos)
-            wsRule.isPersistent = configStringToInt(rule.substr(delim + 11));
-        else if ((delim = rule.find("defaultName:")) != std::string::npos)
+        else if ((delim = rule.find("default:")) != std::string::npos) {
+            CHECK_OR_THROW(configStringToInt(rule.substr(delim + 8)))
+            wsRule.isDefault = *X;
+        } else if ((delim = rule.find("persistent:")) != std::string::npos) {
+            CHECK_OR_THROW(configStringToInt(rule.substr(delim + 11)))
+            wsRule.isPersistent = *X;
+        } else if ((delim = rule.find("defaultName:")) != std::string::npos)
             wsRule.defaultName = rule.substr(delim + 12);
-        else if ((delim = rule.find(ruleOnCreatedEmpty)) != std::string::npos)
-            wsRule.onCreatedEmptyRunCmd = cleanCmdForWorkspace(name, rule.substr(delim + ruleOnCreatedEmptyLen));
-        else if ((delim = rule.find("layoutopt:")) != std::string::npos) {
+        else if ((delim = rule.find(ruleOnCreatedEmpty)) != std::string::npos) {
+            CHECK_OR_THROW(cleanCmdForWorkspace(name, rule.substr(delim + ruleOnCreatedEmptyLen)))
+            wsRule.onCreatedEmptyRunCmd = *X;
+        } else if ((delim = rule.find("layoutopt:")) != std::string::npos) {
             std::string opt = rule.substr(delim + 10);
             if (!opt.contains(":")) {
                 // invalid
@@ -2658,14 +2645,16 @@ std::optional<std::string> CConfigManager::handleWorkspaceRules(const std::strin
                 return "Invalid workspace rule found: " + rule;
             }
 
-            std::string val = opt.substr(opt.find(":") + 1);
-            opt             = opt.substr(0, opt.find(":"));
+            std::string val = opt.substr(opt.find(':') + 1);
+            opt             = opt.substr(0, opt.find(':'));
 
             wsRule.layoutopts[opt] = val;
         }
 
         return {};
     };
+
+#undef CHECK_OR_THROW
 
     CVarList rulesList{rules, 0, ',', true};
     for (auto const& r : rulesList) {
@@ -2677,10 +2666,10 @@ std::optional<std::string> CConfigManager::handleWorkspaceRules(const std::strin
     wsRule.workspaceId   = id;
     wsRule.workspaceName = name;
 
-    const auto IT = std::find_if(m_dWorkspaceRules.begin(), m_dWorkspaceRules.end(), [&](const auto& other) { return other.workspaceString == wsRule.workspaceString; });
+    const auto IT = std::find_if(m_vWorkspaceRules.begin(), m_vWorkspaceRules.end(), [&](const auto& other) { return other.workspaceString == wsRule.workspaceString; });
 
-    if (IT == m_dWorkspaceRules.end())
-        m_dWorkspaceRules.emplace_back(wsRule);
+    if (IT == m_vWorkspaceRules.end())
+        m_vWorkspaceRules.emplace_back(wsRule);
     else
         *IT = mergeWorkspaceRules(*IT, wsRule);
 
@@ -2701,8 +2690,14 @@ std::optional<std::string> CConfigManager::handleSource(const std::string& comma
         Debug::log(ERR, "source= path garbage");
         return "source= path " + rawpath + " bogus!";
     }
-    std::unique_ptr<glob_t, void (*)(glob_t*)> glob_buf{new glob_t, [](glob_t* g) { globfree(g); }};
-    memset(glob_buf.get(), 0, sizeof(glob_t));
+
+    std::unique_ptr<glob_t, void (*)(glob_t*)> glob_buf{static_cast<glob_t*>(calloc(1, sizeof(glob_t))), // allocate and zero-initialize
+                                                        [](glob_t* g) {
+                                                            if (g) {
+                                                                globfree(g); // free internal resources allocated by glob()
+                                                                free(g);     // free the memory for the glob_t structure
+                                                            }
+                                                        }};
 
     if (auto r = glob(absolutePath(rawpath, configCurrentPath).c_str(), GLOB_TILDE, nullptr, glob_buf.get()); r != 0) {
         std::string err = std::format("source= globbing error: {}", r == GLOB_NOMATCH ? "found no match" : GLOB_ABORTED ? "read error" : "out of memory");
@@ -2724,16 +2719,8 @@ std::optional<std::string> CConfigManager::handleSource(const std::string& comma
             Debug::log(ERR, "source= file doesn't exist: {}", value);
             return "source= file " + value + " doesn't exist!";
         }
-        configPaths.push_back(value);
+        m_configPaths.emplace_back(value);
 
-        struct stat fileStat;
-        int         err = stat(value.c_str(), &fileStat);
-        if (err != 0) {
-            Debug::log(WARN, "Error at ticking config at {}, error {}: {}", value, err, strerror(err));
-            return {};
-        }
-
-        configModifyTimes[value]     = fileStat.st_mtime;
         auto configCurrentPathBackup = configCurrentPath;
         configCurrentPath            = value;
 
@@ -2795,7 +2782,7 @@ bool CConfigManager::shouldUseSoftwareCursors() {
     switch (*PNOHW) {
         case 0: return false;
         case 1: return true;
-        default: return g_pHyprRenderer->isNvidia();
+        default: break;
     }
 
     return true;
@@ -2852,4 +2839,8 @@ std::string SConfigOptionDescription::jsonify() const {
                                    value, description, (uint16_t)type, (uint32_t)flags, parseData());
 
     return json;
+}
+
+void CConfigManager::ensurePersistentWorkspacesPresent() {
+    g_pCompositor->ensurePersistentWorkspacesPresent(m_vWorkspaceRules);
 }

@@ -2,7 +2,7 @@
 #include <algorithm>
 
 CXDGDecoration::CXDGDecoration(SP<CZxdgToplevelDecorationV1> resource_, wl_resource* toplevel) : resource(resource_), pToplevelResource(toplevel) {
-    if (!resource->resource())
+    if UNLIKELY (!resource->resource())
         return;
 
     resource->setDestroy([this](CZxdgToplevelDecorationV1* pMgr) { PROTO::xdgDecoration->destroyDecoration(this); });
@@ -41,7 +41,7 @@ CXDGDecorationProtocol::CXDGDecorationProtocol(const wl_interface* iface, const 
 }
 
 void CXDGDecorationProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CZxdgDecorationManagerV1>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CZxdgDecorationManagerV1>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CZxdgDecorationManagerV1* p) { this->onManagerResourceDestroy(p->resource()); });
 
     RESOURCE->setDestroy([this](CZxdgDecorationManagerV1* pMgr) { this->onManagerResourceDestroy(pMgr->resource()); });
@@ -57,16 +57,16 @@ void CXDGDecorationProtocol::destroyDecoration(CXDGDecoration* decoration) {
 }
 
 void CXDGDecorationProtocol::onGetDecoration(CZxdgDecorationManagerV1* pMgr, uint32_t id, wl_resource* xdgToplevel) {
-    if (m_mDecorations.contains(xdgToplevel)) {
+    if UNLIKELY (m_mDecorations.contains(xdgToplevel)) {
         pMgr->error(ZXDG_TOPLEVEL_DECORATION_V1_ERROR_ALREADY_CONSTRUCTED, "Decoration object already exists");
         return;
     }
 
     const auto CLIENT = pMgr->client();
     const auto RESOURCE =
-        m_mDecorations.emplace(xdgToplevel, std::make_unique<CXDGDecoration>(makeShared<CZxdgToplevelDecorationV1>(CLIENT, pMgr->version(), id), xdgToplevel)).first->second.get();
+        m_mDecorations.emplace(xdgToplevel, makeUnique<CXDGDecoration>(makeShared<CZxdgToplevelDecorationV1>(CLIENT, pMgr->version(), id), xdgToplevel)).first->second.get();
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         m_mDecorations.erase(xdgToplevel);
         return;

@@ -2,9 +2,12 @@
 #include "../../Compositor.hpp"
 #include "../../config/ConfigValue.hpp"
 #include "../../managers/eventLoop/EventLoopManager.hpp"
+#include "../pass/BorderPassElement.hpp"
+#include "../Renderer.hpp"
+#include "../../managers/HookSystemManager.hpp"
 
-CHyprBorderDecoration::CHyprBorderDecoration(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow) {
-    m_pWindow = pWindow;
+CHyprBorderDecoration::CHyprBorderDecoration(PHLWINDOW pWindow) : IHyprWindowDecoration(pWindow), m_pWindow(pWindow) {
+    ;
 }
 
 CHyprBorderDecoration::~CHyprBorderDecoration() {
@@ -42,7 +45,7 @@ CBox CHyprBorderDecoration::assignedBoxGlobal() {
     if (!PWORKSPACE)
         return box;
 
-    const auto WORKSPACEOFFSET = PWORKSPACE && !m_pWindow->m_bPinned ? PWORKSPACE->m_vRenderOffset.value() : Vector2D();
+    const auto WORKSPACEOFFSET = PWORKSPACE && !m_pWindow->m_bPinned ? PWORKSPACE->m_vRenderOffset->value() : Vector2D();
     return box.translate(WORKSPACEOFFSET);
 }
 
@@ -59,23 +62,33 @@ void CHyprBorderDecoration::draw(PHLMONITOR pMonitor, float const& a) {
         return;
 
     auto       grad     = m_pWindow->m_cRealBorderColor;
-    const bool ANIMATED = m_pWindow->m_fBorderFadeAnimationProgress.isBeingAnimated();
-    float      a1       = a * (ANIMATED ? m_pWindow->m_fBorderFadeAnimationProgress.value() : 1.f);
+    const bool ANIMATED = m_pWindow->m_fBorderFadeAnimationProgress->isBeingAnimated();
 
-    if (m_pWindow->m_fBorderAngleAnimationProgress.getConfig()->pValues->internalEnabled) {
-        grad.m_fAngle += m_pWindow->m_fBorderAngleAnimationProgress.value() * M_PI * 2;
+    if (m_pWindow->m_fBorderAngleAnimationProgress->enabled()) {
+        grad.m_fAngle += m_pWindow->m_fBorderAngleAnimationProgress->value() * M_PI * 2;
         grad.m_fAngle = normalizeAngleRad(grad.m_fAngle);
     }
 
-    int        borderSize = m_pWindow->getRealBorderSize();
-    const auto ROUNDING   = m_pWindow->rounding() * pMonitor->scale;
+    int                             borderSize    = m_pWindow->getRealBorderSize();
+    const auto                      ROUNDING      = m_pWindow->rounding() * pMonitor->scale;
+    const auto                      ROUNDINGPOWER = m_pWindow->roundingPower();
 
-    g_pHyprOpenGL->renderBorder(&windowBox, grad, ROUNDING, borderSize, a1);
+    CBorderPassElement::SBorderData data;
+    data.box           = windowBox;
+    data.grad1         = grad;
+    data.round         = ROUNDING;
+    data.roundingPower = ROUNDINGPOWER;
+    data.a             = a;
+    data.borderSize    = borderSize;
 
     if (ANIMATED) {
-        float a2 = a * (1.f - m_pWindow->m_fBorderFadeAnimationProgress.value());
-        g_pHyprOpenGL->renderBorder(&windowBox, m_pWindow->m_cRealBorderColorPrevious, ROUNDING, borderSize, a2);
+        data.hasGrad2 = true;
+        data.grad1    = m_pWindow->m_cRealBorderColorPrevious;
+        data.grad2    = grad;
+        data.lerp     = m_pWindow->m_fBorderFadeAnimationProgress->value();
     }
+
+    g_pHyprRenderer->m_sRenderPass.add(makeShared<CBorderPassElement>(data));
 }
 
 eDecorationType CHyprBorderDecoration::getDecorationType() {
@@ -106,8 +119,8 @@ void CHyprBorderDecoration::damageEntire() {
     const auto BORDERSIZE   = m_pWindow->getRealBorderSize() + 1;
 
     const auto PWINDOWWORKSPACE = m_pWindow->m_pWorkspace;
-    if (PWINDOWWORKSPACE && PWINDOWWORKSPACE->m_vRenderOffset.isBeingAnimated() && !m_pWindow->m_bPinned)
-        surfaceBox.translate(PWINDOWWORKSPACE->m_vRenderOffset.value());
+    if (PWINDOWWORKSPACE && PWINDOWWORKSPACE->m_vRenderOffset->isBeingAnimated() && !m_pWindow->m_bPinned)
+        surfaceBox.translate(PWINDOWWORKSPACE->m_vRenderOffset->value());
     surfaceBox.translate(m_pWindow->m_vFloatingOffset);
 
     CBox surfaceBoxExpandedBorder = surfaceBox;

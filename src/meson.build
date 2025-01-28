@@ -9,18 +9,20 @@ executable(
   dependencies: [
     server_protos,
     aquamarine,
+    hyprcursor,
+    hyprgraphics,
+    hyprlang,
+    hyprutils,
     dependency('gbm'),
     dependency('xcursor'),
     dependency('wayland-server'),
     dependency('wayland-client'),
     dependency('cairo'),
-    dependency('hyprcursor', version: '>=0.1.7'),
-    dependency('hyprlang', version: '>= 0.3.2'),
-    dependency('hyprutils', version: '>= 0.2.3'),
     dependency('libdrm'),
     dependency('egl'),
     dependency('xkbcommon'),
     dependency('libinput'),
+    dependency('re2'),
     xcb_dep,
     xcb_composite_dep,
     xcb_errors_dep,
@@ -30,6 +32,7 @@ executable(
     xcb_xfixes_dep,
     backtrace_dep,
     epoll_dep,
+    inotify_dep,
     gio_dep,
     tracy,
 
@@ -46,4 +49,10 @@ executable(
     dependency('uuid'),
   ],
   install: true,
+)
+
+install_symlink(
+  'hyprland',
+  install_dir: get_option('bindir'),
+  pointing_to: 'Hyprland',
 )

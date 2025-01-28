@@ -1,11 +1,10 @@
 #include "RelativePointer.hpp"
-#include "../Compositor.hpp"
 #include "../managers/SeatManager.hpp"
 #include "core/Seat.hpp"
 #include <algorithm>
 
 CRelativePointer::CRelativePointer(SP<CZwpRelativePointerV1> resource_) : resource(resource_) {
-    if (!resource_->resource())
+    if UNLIKELY (!resource_->resource())
         return;
 
     pClient = resource->client();
@@ -32,7 +31,7 @@ CRelativePointerProtocol::CRelativePointerProtocol(const wl_interface* iface, co
 }
 
 void CRelativePointerProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CZwpRelativePointerManagerV1>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CZwpRelativePointerManagerV1>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CZwpRelativePointerManagerV1* p) { this->onManagerResourceDestroy(p->resource()); });
 
     RESOURCE->setDestroy([this](CZwpRelativePointerManagerV1* pMgr) { this->onManagerResourceDestroy(pMgr->resource()); });
@@ -49,9 +48,9 @@ void CRelativePointerProtocol::destroyRelativePointer(CRelativePointer* pointer)
 
 void CRelativePointerProtocol::onGetRelativePointer(CZwpRelativePointerManagerV1* pMgr, uint32_t id, wl_resource* pointer) {
     const auto CLIENT   = pMgr->client();
-    const auto RESOURCE = m_vRelativePointers.emplace_back(std::make_unique<CRelativePointer>(makeShared<CZwpRelativePointerV1>(CLIENT, pMgr->version(), id))).get();
+    const auto RESOURCE = m_vRelativePointers.emplace_back(makeUnique<CRelativePointer>(makeShared<CZwpRelativePointerV1>(CLIENT, pMgr->version(), id))).get();
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         m_vRelativePointers.pop_back();
         return;

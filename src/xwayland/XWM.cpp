@@ -102,8 +102,8 @@ void CXWM::handleMapRequest(xcb_map_request_event_t* e) {
     const bool HAS_HINTS   = XSURF->sizeHints && Vector2D{XSURF->sizeHints->base_width, XSURF->sizeHints->base_height} > Vector2D{5, 5};
     const auto DESIREDSIZE = HAS_HINTS ? Vector2D{XSURF->sizeHints->base_width, XSURF->sizeHints->base_height} : Vector2D{800, 800};
 
-    // if it's too small, or its base size is set, configure it.
-    if ((SMALL || HAS_HINTS) && !XSURF->overrideRedirect) // default to 800 x 800
+    // if it's too small, configure it.
+    if (SMALL && !XSURF->overrideRedirect) // default to 800 x 800
         XSURF->configure({XSURF->geometry.pos(), DESIREDSIZE});
 
     Debug::log(LOG, "[xwm] Mapping window {} in X (geometry {}x{} at {}x{}))", e->window, XSURF->geometry.width, XSURF->geometry.height, XSURF->geometry.x, XSURF->geometry.y);
@@ -177,7 +177,7 @@ std::string CXWM::getAtomName(uint32_t atom) {
 
     // Get the name of the atom
     auto const atom_name_cookie = xcb_get_atom_name(connection, atom);
-    auto*      atom_name_reply  = xcb_get_atom_name_reply(connection, atom_name_cookie, NULL);
+    auto*      atom_name_reply  = xcb_get_atom_name_reply(connection, atom_name_cookie, nullptr);
 
     if (!atom_name_reply)
         return "Unknown";
@@ -225,7 +225,7 @@ void CXWM::readProp(SP<CXWaylandSurface> XSURF, uint32_t atom, xcb_get_property_
         }
     } else if (atom == HYPRATOMS["WM_HINTS"]) {
         if (reply->value_len != 0) {
-            XSURF->hints = std::make_unique<xcb_icccm_wm_hints_t>();
+            XSURF->hints = makeUnique<xcb_icccm_wm_hints_t>();
             xcb_icccm_get_wm_hints_from_reply(XSURF->hints.get(), reply);
 
             if (!(XSURF->hints->flags & XCB_ICCCM_WM_HINT_INPUT))
@@ -247,14 +247,14 @@ void CXWM::readProp(SP<CXWaylandSurface> XSURF, uint32_t atom, xcb_get_property_
             if (XID) {
                 if (const auto NEWXSURF = windowForXID(*XID); NEWXSURF && !lookupParentExists(XSURF, NEWXSURF)) {
                     XSURF->parent = NEWXSURF;
-                    NEWXSURF->children.push_back(XSURF);
+                    NEWXSURF->children.emplace_back(XSURF);
                 } else
                     Debug::log(LOG, "[xwm] Denying transient because it would create a loop");
             }
         }
     } else if (atom == HYPRATOMS["WM_NORMAL_HINTS"]) {
         if (reply->type == HYPRATOMS["WM_SIZE_HINTS"] && reply->value_len > 0) {
-            XSURF->sizeHints = std::make_unique<xcb_size_hints_t>();
+            XSURF->sizeHints = makeUnique<xcb_size_hints_t>();
             std::memset(XSURF->sizeHints.get(), 0, sizeof(xcb_size_hints_t));
 
             xcb_icccm_get_wm_size_hints_from_reply(XSURF->sizeHints.get(), reply);
@@ -387,6 +387,28 @@ void CXWM::handleClientMessage(xcb_client_message_event_t* e) {
         }
     } else if (e->type == HYPRATOMS["_NET_ACTIVE_WINDOW"]) {
         XSURF->events.activate.emit();
+    } else if (e->type == HYPRATOMS["XdndStatus"]) {
+        if (dndDataOffers.empty() || !dndDataOffers.at(0)->getSource()) {
+            Debug::log(TRACE, "[xwm] Rejecting XdndStatus message: nothing to get");
+            return;
+        }
+
+        xcb_client_message_data_t* data     = &e->data;
+        const bool                 ACCEPTED = data->data32[1] & 1;
+
+        if (ACCEPTED)
+            dndDataOffers.at(0)->getSource()->accepted("");
+
+        Debug::log(LOG, "[xwm] XdndStatus: accepted: {}");
+    } else if (e->type == HYPRATOMS["XdndFinished"]) {
+        if (dndDataOffers.empty() || !dndDataOffers.at(0)->getSource()) {
+            Debug::log(TRACE, "[xwm] Rejecting XdndFinished message: nothing to get");
+            return;
+        }
+
+        dndDataOffers.at(0)->getSource()->sendDndFinished();
+
+        Debug::log(LOG, "[xwm] XdndFinished");
     } else {
         Debug::log(TRACE, "[xwm] Unhandled message prop {} -> {}", e->type, propName);
         return;
@@ -545,22 +567,22 @@ std::string CXWM::mimeFromAtom(xcb_atom_t atom) {
 void CXWM::handleSelectionNotify(xcb_selection_notify_event_t* e) {
     Debug::log(TRACE, "[xwm] Selection notify for {} prop {} target {}", e->selection, e->property, e->target);
 
-    SXSelection& sel = clipboard;
+    SXSelection* sel = getSelection(e->selection);
 
     if (e->property == XCB_ATOM_NONE) {
-        if (sel.transfer) {
+        if (sel->transfer) {
             Debug::log(TRACE, "[xwm] converting selection failed");
-            sel.transfer.reset();
+            sel->transfer.reset();
         }
-    } else if (e->target == HYPRATOMS["TARGETS"]) {
+    } else if (e->target == HYPRATOMS["TARGETS"] && sel == &clipboard) {
         if (!focusedSurface) {
             Debug::log(TRACE, "[xwm] denying access to write to clipboard because no X client is in focus");
             return;
         }
 
-        setClipboardToWayland(sel);
-    } else if (sel.transfer)
-        getTransferData(sel);
+        setClipboardToWayland(*sel);
+    } else if (sel->transfer)
+        getTransferData(*sel);
 }
 
 bool CXWM::handleSelectionPropertyNotify(xcb_property_notify_event_t* e) {
@@ -571,13 +593,22 @@ bool CXWM::handleSelectionPropertyNotify(xcb_property_notify_event_t* e) {
     return false;
 }
 
+SXSelection* CXWM::getSelection(xcb_atom_t atom) {
+    if (atom == HYPRATOMS["CLIPBOARD"])
+        return &clipboard;
+    else if (atom == HYPRATOMS["XdndSelection"])
+        return &dndSelection;
+
+    return nullptr;
+}
+
 void CXWM::handleSelectionRequest(xcb_selection_request_event_t* e) {
     Debug::log(TRACE, "[xwm] Selection request for {} prop {} target {} time {} requestor {} selection {}", e->selection, e->property, e->target, e->time, e->requestor,
                e->selection);
 
-    SXSelection& sel = clipboard;
+    SXSelection* sel = getSelection(e->selection);
 
-    if (!g_pSeatManager->selection.currentSelection) {
+    if (!sel) {
         Debug::log(ERR, "[xwm] No selection");
         selectionSendNotify(e, false);
         return;
@@ -588,8 +619,8 @@ void CXWM::handleSelectionRequest(xcb_selection_request_event_t* e) {
         return;
     }
 
-    if (sel.window != e->owner && e->time != XCB_CURRENT_TIME && e->time < sel.timestamp) {
-        Debug::log(ERR, "[xwm] outdated selection request. Time {} < {}", e->time, sel.timestamp);
+    if (sel->window != e->owner && e->time != XCB_CURRENT_TIME && e->time < sel->timestamp) {
+        Debug::log(ERR, "[xwm] outdated selection request. Time {} < {}", e->time, sel->timestamp);
         selectionSendNotify(e, false);
         return;
     }
@@ -602,9 +633,18 @@ void CXWM::handleSelectionRequest(xcb_selection_request_event_t* e) {
 
     if (e->target == HYPRATOMS["TARGETS"]) {
         // send mime types
-        auto                    mimes = g_pSeatManager->selection.currentSelection->mimes();
+        std::vector<std::string> mimes;
+        if (sel == &clipboard && g_pSeatManager->selection.currentSelection)
+            mimes = g_pSeatManager->selection.currentSelection->mimes();
+        else if (sel == &dndSelection && !dndDataOffers.empty() && dndDataOffers.at(0)->source)
+            mimes = dndDataOffers.at(0)->source->mimes();
+
+        if (mimes.empty())
+            Debug::log(WARN, "[xwm] WARNING: No mimes in TARGETS?");
 
         std::vector<xcb_atom_t> atoms;
+        // reserve to avoid reallocations
+        atoms.reserve(mimes.size() + 2);
         atoms.push_back(HYPRATOMS["TIMESTAMP"]);
         atoms.push_back(HYPRATOMS["TARGETS"]);
 
@@ -615,12 +655,11 @@ void CXWM::handleSelectionRequest(xcb_selection_request_event_t* e) {
         xcb_change_property(connection, XCB_PROP_MODE_REPLACE, e->requestor, e->property, XCB_ATOM_ATOM, 32, atoms.size(), atoms.data());
         selectionSendNotify(e, true);
     } else if (e->target == HYPRATOMS["TIMESTAMP"]) {
-        xcb_change_property(connection, XCB_PROP_MODE_REPLACE, e->requestor, e->property, XCB_ATOM_INTEGER, 32, 1, &sel.timestamp);
+        xcb_change_property(connection, XCB_PROP_MODE_REPLACE, e->requestor, e->property, XCB_ATOM_INTEGER, 32, 1, &sel->timestamp);
         selectionSendNotify(e, true);
     } else if (e->target == HYPRATOMS["DELETE"]) {
         selectionSendNotify(e, true);
     } else {
-
         std::string mime = mimeFromAtom(e->target);
 
         if (mime == "INVALID") {
@@ -629,7 +668,7 @@ void CXWM::handleSelectionRequest(xcb_selection_request_event_t* e) {
             return;
         }
 
-        if (!sel.sendData(e, mime)) {
+        if (!sel->sendData(e, mime)) {
             Debug::log(LOG, "[xwm] Failed to send selection :(");
             selectionSendNotify(e, false);
             return;
@@ -641,24 +680,27 @@ bool CXWM::handleSelectionXFixesNotify(xcb_xfixes_selection_notify_event_t* e) {
     Debug::log(TRACE, "[xwm] Selection xfixes notify for {}", e->selection);
 
     // IMPORTANT: mind the g_pSeatManager below
-    SXSelection& sel = clipboard;
+    SXSelection* sel = getSelection(e->selection);
+
+    if (sel == &dndSelection)
+        return true;
 
     if (e->owner == XCB_WINDOW_NONE) {
-        if (sel.owner != sel.window)
+        if (sel->owner != sel->window && sel == &clipboard)
             g_pSeatManager->setCurrentSelection(nullptr);
 
-        sel.owner = 0;
+        sel->owner = 0;
         return true;
     }
 
-    sel.owner = e->owner;
+    sel->owner = e->owner;
 
-    if (sel.owner == sel.window) {
-        sel.timestamp = e->timestamp;
+    if (sel->owner == sel->window) {
+        sel->timestamp = e->timestamp;
         return true;
     }
 
-    xcb_convert_selection(connection, sel.window, HYPRATOMS["CLIPBOARD"], HYPRATOMS["TARGETS"], HYPRATOMS["_WL_SELECTION"], e->timestamp);
+    xcb_convert_selection(connection, sel->window, HYPRATOMS["CLIPBOARD"], HYPRATOMS["TARGETS"], HYPRATOMS["_WL_SELECTION"], e->timestamp);
     xcb_flush(connection);
 
     return true;
@@ -693,7 +735,7 @@ int CXWM::onEvent(int fd, uint32_t mask) {
         g_pXWayland->pWM.reset();
         g_pXWayland->pServer.reset();
         // Attempt to create fresh instance
-        g_pEventLoopManager->doLater([]() { g_pXWayland = std::make_unique<CXWayland>(true); });
+        g_pEventLoopManager->doLater([]() { g_pXWayland = makeUnique<CXWayland>(true); });
         return 0;
     }
 
@@ -763,7 +805,7 @@ void CXWM::gatherResources() {
     xcb_xfixes_query_version_cookie_t xfixes_cookie;
     xcb_xfixes_query_version_reply_t* xfixes_reply;
     xfixes_cookie = xcb_xfixes_query_version(connection, XCB_XFIXES_MAJOR_VERSION, XCB_XFIXES_MINOR_VERSION);
-    xfixes_reply  = xcb_xfixes_query_version_reply(connection, xfixes_cookie, NULL);
+    xfixes_reply  = xcb_xfixes_query_version_reply(connection, xfixes_cookie, nullptr);
 
     Debug::log(LOG, "xfixes version: {}.{}", xfixes_reply->major_version, xfixes_reply->minor_version);
     xfixesMajor = xfixes_reply->major_version;
@@ -775,8 +817,8 @@ void CXWM::gatherResources() {
         return;
 
     xcb_res_query_version_cookie_t xres_cookie = xcb_res_query_version(connection, XCB_RES_MAJOR_VERSION, XCB_RES_MINOR_VERSION);
-    xcb_res_query_version_reply_t* xres_reply  = xcb_res_query_version_reply(connection, xres_cookie, NULL);
-    if (xres_reply == NULL)
+    xcb_res_query_version_reply_t* xres_reply  = xcb_res_query_version_reply(connection, xres_cookie, nullptr);
+    if (xres_reply == nullptr)
         return;
 
     Debug::log(LOG, "xres version: {}.{}", xres_reply->server_major, xres_reply->server_minor);
@@ -792,7 +834,7 @@ void CXWM::getVisual() {
     xcb_visualtype_t*         visualtype;
 
     d_iter     = xcb_screen_allowed_depths_iterator(screen);
-    visualtype = NULL;
+    visualtype = nullptr;
     while (d_iter.rem > 0) {
         if (d_iter.data->depth == 32) {
             vt_iter    = xcb_depth_visuals_iterator(d_iter.data);
@@ -803,7 +845,7 @@ void CXWM::getVisual() {
         xcb_depth_next(&d_iter);
     }
 
-    if (visualtype == NULL) {
+    if (visualtype == nullptr) {
         Debug::log(LOG, "xwm: No 32-bit visualtype");
         return;
     }
@@ -815,13 +857,13 @@ void CXWM::getVisual() {
 
 void CXWM::getRenderFormat() {
     xcb_render_query_pict_formats_cookie_t cookie = xcb_render_query_pict_formats(connection);
-    xcb_render_query_pict_formats_reply_t* reply  = xcb_render_query_pict_formats_reply(connection, cookie, NULL);
+    xcb_render_query_pict_formats_reply_t* reply  = xcb_render_query_pict_formats_reply(connection, cookie, nullptr);
     if (!reply) {
         Debug::log(LOG, "xwm: No xcb_render_query_pict_formats_reply_t reply");
         return;
     }
     xcb_render_pictforminfo_iterator_t iter   = xcb_render_query_pict_formats_formats_iterator(reply);
-    xcb_render_pictforminfo_t*         format = NULL;
+    xcb_render_pictforminfo_t*         format = nullptr;
     while (iter.rem > 0) {
         if (iter.data->depth == 32) {
             format = iter.data;
@@ -831,7 +873,7 @@ void CXWM::getRenderFormat() {
         xcb_render_pictforminfo_next(&iter);
     }
 
-    if (format == NULL) {
+    if (format == nullptr) {
         Debug::log(LOG, "xwm: No 32-bit render format");
         free(reply);
         return;
@@ -853,6 +895,8 @@ CXWM::CXWM() : connection(g_pXWayland->pServer->xwmFDs[0]) {
         Debug::log(ERR, "[xwm] Couldn't allocate errors context");
         return;
     }
+
+    dndDataDevice->self = dndDataDevice;
 
     xcb_screen_iterator_t screen_iterator = xcb_setup_roots_iterator(xcb_get_setup(connection));
     screen                                = screen_iterator.data;
@@ -906,7 +950,7 @@ void CXWM::setActiveWindow(xcb_window_t window) {
 void CXWM::createWMWindow() {
     constexpr const char* wmName = "Hyprland :D";
     wmWindow                     = xcb_generate_id(connection);
-    xcb_create_window(connection, XCB_COPY_FROM_PARENT, wmWindow, screen->root, 0, 0, 10, 10, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, NULL);
+    xcb_create_window(connection, XCB_COPY_FROM_PARENT, wmWindow, screen->root, 0, 0, 10, 10, 0, XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
     xcb_change_property(connection, XCB_PROP_MODE_REPLACE, wmWindow, HYPRATOMS["_NET_WM_NAME"], HYPRATOMS["UTF8_STRING"],
                         8, // format
                         strlen(wmName), wmName);
@@ -947,6 +991,8 @@ void CXWM::sendState(SP<CXWaylandSurface> surf) {
     }
 
     std::vector<uint32_t> props;
+    // reserve to avoid reallocations
+    props.reserve(6); // props below
     if (surf->modal)
         props.push_back(HYPRATOMS["_NET_WM_STATE_MODAL"]);
     if (surf->fullscreen)
@@ -986,7 +1032,7 @@ void CXWM::onNewResource(SP<CXWaylandSurfaceResource> resource) {
     Debug::log(LOG, "[xwm] New XWayland resource at {:x}", (uintptr_t)resource.get());
 
     std::erase_if(shellResources, [](const auto& e) { return e.expired(); });
-    shellResources.push_back(resource);
+    shellResources.emplace_back(resource);
 
     for (auto const& surf : surfaces) {
         if (surf->resource || surf->wlSerial != resource->serial)
@@ -1013,6 +1059,15 @@ void CXWM::readWindowData(SP<CXWaylandSurface> surf) {
         readProp(surf, interestingProps.at(i), reply);
         free(reply);
     }
+}
+
+SP<CXWaylandSurface> CXWM::windowForWayland(SP<CWLSurfaceResource> surf) {
+    for (auto& s : surfaces) {
+        if (s->surface == surf)
+            return s;
+    }
+
+    return nullptr;
 }
 
 void CXWM::associate(SP<CXWaylandSurface> surf, SP<CWLSurfaceResource> wlSurf) {
@@ -1068,7 +1123,7 @@ void CXWM::updateClientList() {
 }
 
 bool CXWM::isWMWindow(xcb_window_t w) {
-    return w == wmWindow || w == clipboard.window;
+    return w == wmWindow || w == clipboard.window || w == dndSelection.window;
 }
 
 void CXWM::updateOverrideRedirect(SP<CXWaylandSurface> surf, bool overrideRedirect) {
@@ -1089,7 +1144,15 @@ void CXWM::initSelection() {
         XCB_XFIXES_SELECTION_EVENT_MASK_SET_SELECTION_OWNER | XCB_XFIXES_SELECTION_EVENT_MASK_SELECTION_WINDOW_DESTROY | XCB_XFIXES_SELECTION_EVENT_MASK_SELECTION_CLIENT_CLOSE;
     xcb_xfixes_select_selection_input(connection, clipboard.window, HYPRATOMS["CLIPBOARD"], mask2);
 
-    clipboard.listeners.setSelection = g_pSeatManager->events.setSelection.registerListener([this](std::any d) { clipboard.onSelection(); });
+    clipboard.listeners.setSelection        = g_pSeatManager->events.setSelection.registerListener([this](std::any d) { clipboard.onSelection(); });
+    clipboard.listeners.keyboardFocusChange = g_pSeatManager->events.keyboardFocusChange.registerListener([this](std::any d) { clipboard.onKeyboardFocus(); });
+
+    dndSelection.window = xcb_generate_id(connection);
+    xcb_create_window(connection, XCB_COPY_FROM_PARENT, dndSelection.window, screen->root, 0, 0, 8192, 8192, 0, XCB_WINDOW_CLASS_INPUT_ONLY, screen->root_visual, XCB_CW_EVENT_MASK,
+                      mask);
+
+    uint32_t val1 = XDND_VERSION;
+    xcb_change_property(connection, XCB_PROP_MODE_REPLACE, dndSelection.window, HYPRATOMS["XdndAware"], XCB_ATOM_ATOM, 32, 1, &val1);
 }
 
 void CXWM::setClipboardToWayland(SXSelection& sel) {
@@ -1105,6 +1168,11 @@ void CXWM::setClipboardToWayland(SXSelection& sel) {
     g_pSeatManager->setCurrentSelection(sel.dataSource);
 }
 
+static int writeDataSource(int fd, uint32_t mask, void* data) {
+    auto selection = (SXSelection*)data;
+    return selection->onWrite();
+}
+
 void CXWM::getTransferData(SXSelection& sel) {
     Debug::log(LOG, "[xwm] getTransferData");
 
@@ -1116,26 +1184,9 @@ void CXWM::getTransferData(SXSelection& sel) {
         sel.transfer.reset();
         return;
     } else {
-        char*   property  = (char*)xcb_get_property_value(sel.transfer->propertyReply);
-        int     remainder = xcb_get_property_value_length(sel.transfer->propertyReply) - sel.transfer->propertyStart;
-
-        ssize_t len = write(sel.transfer->wlFD, property + sel.transfer->propertyStart, remainder);
-        if (len == -1) {
-            Debug::log(ERR, "[xwm] write died in transfer get");
-            close(sel.transfer->wlFD);
-            sel.transfer.reset();
-            return;
-        }
-
-        if (len < remainder) {
-            sel.transfer->propertyStart += len;
-            Debug::log(ERR, "[xwm] wl client read partially: len {}", len);
-            return;
-        } else {
-            Debug::log(LOG, "[xwm] cb transfer to wl client complete, read {} bytes", len);
-            close(sel.transfer->wlFD);
-            sel.transfer.reset();
-        }
+        sel.onWrite();
+        if (sel.transfer)
+            sel.transfer->eventSource = wl_event_loop_add_fd(g_pCompositor->m_sWLEventLoop, sel.transfer->wlFD, WL_EVENT_WRITABLE, ::writeDataSource, &sel);
     }
 }
 
@@ -1157,7 +1208,7 @@ void CXWM::setCursor(unsigned char* pixData, uint32_t stride, const Vector2D& si
     xcb_render_create_picture(connection, pic, pix, render_format_id, 0, 0);
 
     xcb_gcontext_t gc = xcb_generate_id(connection);
-    xcb_create_gc(connection, gc, pix, 0, NULL);
+    xcb_create_gc(connection, gc, pix, 0, nullptr);
 
     xcb_put_image(connection, XCB_IMAGE_FORMAT_Z_PIXMAP, pix, gc, size.x, size.y, 0, 0, 0, CURSOR_DEPTH, stride * size.y * sizeof(uint8_t), pixData);
     xcb_free_gc(connection, gc);
@@ -1172,6 +1223,52 @@ void CXWM::setCursor(unsigned char* pixData, uint32_t stride, const Vector2D& si
     xcb_flush(connection);
 }
 
+void CXWM::sendDndEvent(SP<CWLSurfaceResource> destination, xcb_atom_t type, xcb_client_message_data_t& data) {
+    auto XSURF = windowForWayland(destination);
+
+    if (!XSURF) {
+        Debug::log(ERR, "[xwm] No xwayland surface for destination in sendDndEvent");
+        return;
+    }
+
+    xcb_client_message_event_t event = {
+        .response_type = XCB_CLIENT_MESSAGE,
+        .format        = 32,
+        .sequence      = 0,
+        .window        = XSURF->xID,
+        .type          = type,
+        .data          = data,
+    };
+
+    xcb_send_event(g_pXWayland->pWM->connection,
+                   0, // propagate
+                   XSURF->xID, XCB_EVENT_MASK_NO_EVENT, (const char*)&event);
+    xcb_flush(g_pXWayland->pWM->connection);
+}
+
+SP<CX11DataDevice> CXWM::getDataDevice() {
+    return dndDataDevice;
+}
+
+SP<IDataOffer> CXWM::createX11DataOffer(SP<CWLSurfaceResource> surf, SP<IDataSource> source) {
+    auto XSURF = windowForWayland(surf);
+
+    if (!XSURF) {
+        Debug::log(ERR, "[xwm] No xwayland surface for destination in createX11DataOffer");
+        return nullptr;
+    }
+
+    // invalidate old
+    g_pXWayland->pWM->dndDataOffers.clear();
+
+    auto offer             = dndDataOffers.emplace_back(makeShared<CX11DataOffer>());
+    offer->self            = offer;
+    offer->xwaylandSurface = XSURF;
+    offer->source          = source;
+
+    return offer;
+}
+
 void SXSelection::onSelection() {
     if (g_pSeatManager->selection.currentSelection && g_pSeatManager->selection.currentSelection->type() == DATA_SOURCE_TYPE_X11)
         return;
@@ -1179,6 +1276,16 @@ void SXSelection::onSelection() {
     if (g_pSeatManager->selection.currentSelection) {
         xcb_set_selection_owner(g_pXWayland->pWM->connection, g_pXWayland->pWM->clipboard.window, HYPRATOMS["CLIPBOARD"], XCB_TIME_CURRENT_TIME);
         xcb_flush(g_pXWayland->pWM->connection);
+        g_pXWayland->pWM->clipboard.notifyOnFocus = true;
+    }
+}
+
+void SXSelection::onKeyboardFocus() {
+    if (!g_pSeatManager->state.keyboardFocusResource || g_pSeatManager->state.keyboardFocusResource->client() != g_pXWayland->pServer->xwaylandClient)
+        return;
+    if (g_pXWayland->pWM->clipboard.notifyOnFocus) {
+        onSelection();
+        g_pXWayland->pWM->clipboard.notifyOnFocus = false;
     }
 }
 
@@ -1220,7 +1327,11 @@ static int readDataSource(int fd, uint32_t mask, void* data) {
 }
 
 bool SXSelection::sendData(xcb_selection_request_event_t* e, std::string mime) {
-    WP<IDataSource> selection = g_pSeatManager->selection.currentSelection;
+    WP<IDataSource> selection;
+    if (this == &g_pXWayland->pWM->clipboard)
+        selection = g_pSeatManager->selection.currentSelection;
+    else if (!g_pXWayland->pWM->dndDataOffers.empty())
+        selection = g_pXWayland->pWM->dndDataOffers.at(0)->getSource();
 
     if (!selection)
         return false;
@@ -1235,7 +1346,7 @@ bool SXSelection::sendData(xcb_selection_request_event_t* e, std::string mime) {
         mime = *MIMES.begin();
     }
 
-    transfer          = std::make_unique<SXTransfer>(*this);
+    transfer          = makeUnique<SXTransfer>(*this);
     transfer->request = *e;
 
     int p[2];
@@ -1247,7 +1358,8 @@ bool SXSelection::sendData(xcb_selection_request_event_t* e, std::string mime) {
     fcntl(p[0], F_SETFD, FD_CLOEXEC);
     fcntl(p[0], F_SETFL, O_NONBLOCK);
     fcntl(p[1], F_SETFD, FD_CLOEXEC);
-    fcntl(p[1], F_SETFL, O_NONBLOCK);
+    // the wayland client might not expect a non-blocking fd
+    // fcntl(p[1], F_SETFL, O_NONBLOCK);
 
     transfer->wlFD = p[0];
 
@@ -1258,6 +1370,30 @@ bool SXSelection::sendData(xcb_selection_request_event_t* e, std::string mime) {
     transfer->eventSource = wl_event_loop_add_fd(g_pCompositor->m_sWLEventLoop, transfer->wlFD, WL_EVENT_READABLE, ::readDataSource, this);
 
     return true;
+}
+
+int SXSelection::onWrite() {
+    char*   property  = (char*)xcb_get_property_value(transfer->propertyReply);
+    int     remainder = xcb_get_property_value_length(transfer->propertyReply) - transfer->propertyStart;
+
+    ssize_t len = write(transfer->wlFD, property + transfer->propertyStart, remainder);
+    if (len == -1) {
+        Debug::log(ERR, "[xwm] write died in transfer get");
+        close(transfer->wlFD);
+        transfer.reset();
+        return 0;
+    }
+
+    if (len < remainder) {
+        transfer->propertyStart += len;
+        Debug::log(LOG, "[xwm] wl client read partially: len {}", len);
+    } else {
+        Debug::log(LOG, "[xwm] cb transfer to wl client complete, read {} bytes", len);
+        close(transfer->wlFD);
+        transfer.reset();
+    }
+
+    return 1;
 }
 
 SXTransfer::~SXTransfer() {

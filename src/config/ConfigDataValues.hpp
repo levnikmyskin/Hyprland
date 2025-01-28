@@ -3,7 +3,7 @@
 #include "../helpers/varlist/VarList.hpp"
 #include <vector>
 
-enum eConfigValueDataTypes {
+enum eConfigValueDataTypes : int8_t {
     CVD_TYPE_INVALID   = -1,
     CVD_TYPE_GRADIENT  = 0,
     CVD_TYPE_CSS_VALUE = 1
@@ -20,24 +20,40 @@ class ICustomConfigValueData {
 
 class CGradientValueData : public ICustomConfigValueData {
   public:
-    CGradientValueData() {};
-    CGradientValueData(CColor col) {
+    CGradientValueData() = default;
+    CGradientValueData(CHyprColor col) {
         m_vColors.push_back(col);
+        updateColorsOk();
     };
-    virtual ~CGradientValueData() {};
+    virtual ~CGradientValueData() = default;
 
     virtual eConfigValueDataTypes getDataType() {
         return CVD_TYPE_GRADIENT;
     }
 
-    void reset(CColor col) {
+    void reset(CHyprColor col) {
         m_vColors.clear();
         m_vColors.emplace_back(col);
         m_fAngle = 0;
+        updateColorsOk();
+    }
+
+    void updateColorsOk() {
+        m_vColorsOkLabA.clear();
+        for (auto& c : m_vColors) {
+            const auto OKLAB = c.asOkLab();
+            m_vColorsOkLabA.emplace_back(OKLAB.l);
+            m_vColorsOkLabA.emplace_back(OKLAB.a);
+            m_vColorsOkLabA.emplace_back(OKLAB.b);
+            m_vColorsOkLabA.emplace_back(c.a);
+        }
     }
 
     /* Vector containing the colors */
-    std::vector<CColor> m_vColors;
+    std::vector<CHyprColor> m_vColors;
+
+    /* Vector containing pure colors for shoving into opengl */
+    std::vector<float> m_vColorsOkLabA;
 
     /* Float corresponding to the angle (rad) */
     float m_fAngle = 0;

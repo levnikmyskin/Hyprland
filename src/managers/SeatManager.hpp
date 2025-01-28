@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <wayland-server-protocol.h>
-#include "../macros.hpp"
 #include "../helpers/signal/Signal.hpp"
 #include "../helpers/math/Math.hpp"
 #include "../protocols/types/DataDevice.hpp"
@@ -95,6 +94,8 @@ class CSeatManager {
 
         WP<CWLSurfaceResource> touchFocus;
         WP<CWLSeatResource>    touchFocusResource;
+
+        WP<CWLSurfaceResource> dndPointerFocus;
     } state;
 
     struct SSetCursorEvent {
@@ -105,6 +106,7 @@ class CSeatManager {
     struct {
         CSignal keyboardFocusChange;
         CSignal pointerFocusChange;
+        CSignal dndPointerFocusChange;
         CSignal touchFocusChange;
         CSignal setCursor; // SSetCursorEvent
         CSignal setSelection;

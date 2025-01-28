@@ -1,6 +1,5 @@
 #pragma once
 
-#include <memory>
 #include <vector>
 #include <cstdint>
 #include "WaylandProtocol.hpp"
@@ -9,7 +8,7 @@
 
 class CSinglePixelBuffer : public IHLBuffer {
   public:
-    CSinglePixelBuffer(uint32_t id, wl_client* client, CColor col);
+    CSinglePixelBuffer(uint32_t id, wl_client* client, CHyprColor col);
     virtual ~CSinglePixelBuffer();
 
     virtual Aquamarine::eBufferCapability          caps();
@@ -33,7 +32,7 @@ class CSinglePixelBuffer : public IHLBuffer {
 
 class CSinglePixelBufferResource {
   public:
-    CSinglePixelBufferResource(uint32_t id, wl_client* client, CColor color);
+    CSinglePixelBufferResource(uint32_t id, wl_client* client, CHyprColor color);
     ~CSinglePixelBufferResource();
 
     bool good();

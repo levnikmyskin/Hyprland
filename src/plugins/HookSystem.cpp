@@ -2,7 +2,7 @@
 #include "../debug/Log.hpp"
 #include "../helpers/varlist/VarList.hpp"
 #include "../managers/TokenManager.hpp"
-#include "../Compositor.hpp"
+#include "../helpers/MiscFunctions.hpp"
 
 #define register
 #include <udis86.h>
@@ -14,10 +14,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-CFunctionHook::CFunctionHook(HANDLE owner, void* source, void* destination) {
-    m_pSource      = source;
-    m_pDestination = destination;
-    m_pOwner       = owner;
+CFunctionHook::CFunctionHook(HANDLE owner, void* source, void* destination) : m_pSource(source), m_pDestination(destination), m_pOwner(owner) {
+    ;
 }
 
 CFunctionHook::~CFunctionHook() {
@@ -88,13 +86,16 @@ CFunctionHook::SAssembly CFunctionHook::fixInstructionProbeRIPCalls(const SInstr
             finalBytes[currentDestinationOffset + i] = *(char*)(currentAddress + i);
         }
 
-        std::string code = probe.assembly.substr(lastAsmNewline, probe.assembly.find("\n", lastAsmNewline) - lastAsmNewline);
+        std::string code = probe.assembly.substr(lastAsmNewline, probe.assembly.find('\n', lastAsmNewline) - lastAsmNewline);
         if (code.contains("%rip")) {
-            CVarList      tokens{code, 0, 's'};
-            size_t        plusPresent  = tokens[1][0] == '+' ? 1 : 0;
-            size_t        minusPresent = tokens[1][0] == '-' ? 1 : 0;
-            std::string   addr         = tokens[1].substr((plusPresent || minusPresent), tokens[1].find("(%rip)") - (plusPresent || minusPresent));
-            const int32_t OFFSET       = (minusPresent ? -1 : 1) * configStringToInt(addr);
+            CVarList    tokens{code, 0, 's'};
+            size_t      plusPresent  = tokens[1][0] == '+' ? 1 : 0;
+            size_t      minusPresent = tokens[1][0] == '-' ? 1 : 0;
+            std::string addr         = tokens[1].substr((plusPresent || minusPresent), tokens[1].find("(%rip)") - (plusPresent || minusPresent));
+            auto        addrResult   = configStringToInt(addr);
+            if (!addrResult)
+                return {};
+            const int32_t OFFSET = (minusPresent ? -1 : 1) * *addrResult;
             if (OFFSET == 0)
                 return {};
             const uint64_t DESTINATION = currentAddress + OFFSET + len;
@@ -129,7 +130,7 @@ CFunctionHook::SAssembly CFunctionHook::fixInstructionProbeRIPCalls(const SInstr
             currentDestinationOffset += len;
         }
 
-        lastAsmNewline = probe.assembly.find("\n", lastAsmNewline) + 1;
+        lastAsmNewline = probe.assembly.find('\n', lastAsmNewline) + 1;
         currentAddress += len;
     }
 
@@ -252,7 +253,7 @@ bool CFunctionHook::unhook() {
 }
 
 CFunctionHook* CHookSystem::initHook(HANDLE owner, void* source, void* destination) {
-    return m_vHooks.emplace_back(std::make_unique<CFunctionHook>(owner, source, destination)).get();
+    return m_vHooks.emplace_back(makeUnique<CFunctionHook>(owner, source, destination)).get();
 }
 
 bool CHookSystem::removeHook(CFunctionHook* hook) {
@@ -269,6 +270,8 @@ static uintptr_t seekNewPageAddr() {
     auto           MAPS         = std::ifstream("/proc/self/maps");
 
     uint64_t       lastStart = 0, lastEnd = 0;
+
+    bool           anchoredToHyprland = false;
 
     std::string    line;
     while (std::getline(MAPS, line)) {
@@ -299,6 +302,19 @@ static uintptr_t seekNewPageAddr() {
         }
 
         if (start - lastEnd > PAGESIZE_VAR * 2) {
+            if (!line.contains("Hyprland") && !anchoredToHyprland) {
+                Debug::log(LOG, "seekNewPageAddr: skipping gap 0x{:x}-0x{:x}, not anchored to Hyprland code pages yet.", lastEnd, start);
+                lastStart = start;
+                lastEnd   = end;
+                continue;
+            } else if (!anchoredToHyprland) {
+                Debug::log(LOG, "seekNewPageAddr: Anchored to hyprland at 0x{:x}", start);
+                anchoredToHyprland = true;
+                lastStart          = start;
+                lastEnd            = end;
+                continue;
+            }
+
             Debug::log(LOG, "seekNewPageAddr: found gap: 0x{:x}-0x{:x} ({} bytes)", lastEnd, start, start - lastEnd);
             MAPS.close();
             return lastEnd;

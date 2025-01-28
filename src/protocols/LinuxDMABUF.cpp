@@ -126,7 +126,7 @@ bool CLinuxDMABuffer::good() {
 }
 
 CLinuxDMABBUFParamsResource::CLinuxDMABBUFParamsResource(SP<CZwpLinuxBufferParamsV1> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setOnDestroy([this](CZwpLinuxBufferParamsV1* r) { PROTO::linuxDma->destroyResource(this); });
@@ -208,25 +208,25 @@ bool CLinuxDMABBUFParamsResource::good() {
 void CLinuxDMABBUFParamsResource::create(uint32_t id) {
     used = true;
 
-    if (!verify()) {
+    if UNLIKELY (!verify()) {
         LOGM(ERR, "Failed creating a dmabuf: verify() said no");
         return; // if verify failed, we errored the resource.
     }
 
-    if (!commence()) {
+    if UNLIKELY (!commence()) {
         LOGM(ERR, "Failed creating a dmabuf: commence() said no");
         resource->sendFailed();
         return;
     }
 
-    LOGM(LOG, "Creating a dmabuf, with id {}: size {}, fmt {}, planes {}", id, attrs->size, FormatUtils::drmFormatName(attrs->format), attrs->planes);
+    LOGM(LOG, "Creating a dmabuf, with id {}: size {}, fmt {}, planes {}", id, attrs->size, NFormatUtils::drmFormatName(attrs->format), attrs->planes);
     for (int i = 0; i < attrs->planes; ++i) {
         LOGM(LOG, " | plane {}: mod {} fd {} stride {} offset {}", i, attrs->modifier, attrs->fds[i], attrs->strides[i], attrs->offsets[i]);
     }
 
     auto buf = PROTO::linuxDma->m_vBuffers.emplace_back(makeShared<CLinuxDMABuffer>(id, resource->client(), *attrs));
 
-    if (!buf->good() || !buf->buffer->success) {
+    if UNLIKELY (!buf->good() || !buf->buffer->success) {
         resource->sendFailed();
         return;
     }
@@ -259,12 +259,12 @@ bool CLinuxDMABBUFParamsResource::commence() {
 }
 
 bool CLinuxDMABBUFParamsResource::verify() {
-    if (attrs->planes <= 0) {
+    if UNLIKELY (attrs->planes <= 0) {
         resource->error(ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE, "No planes added");
         return false;
     }
 
-    if (attrs->fds.at(0) < 0) {
+    if UNLIKELY (attrs->fds.at(0) < 0) {
         resource->error(ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE, "No plane 0");
         return false;
     }
@@ -282,7 +282,7 @@ bool CLinuxDMABBUFParamsResource::verify() {
         }
     }
 
-    if (attrs->size.x < 1 || attrs->size.y < 1) {
+    if UNLIKELY (attrs->size.x < 1 || attrs->size.y < 1) {
         resource->error(ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_DIMENSIONS, "x/y < 1");
         return false;
     }
@@ -300,7 +300,7 @@ bool CLinuxDMABBUFParamsResource::verify() {
 }
 
 CLinuxDMABUFFeedbackResource::CLinuxDMABUFFeedbackResource(SP<CZwpLinuxDmabufFeedbackV1> resource_, SP<CWLSurfaceResource> surface_) : surface(surface_), resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setOnDestroy([this](CZwpLinuxDmabufFeedbackV1* r) { PROTO::linuxDma->destroyResource(this); });
@@ -355,7 +355,7 @@ void CLinuxDMABUFFeedbackResource::sendDefaultFeedback() {
 }
 
 CLinuxDMABUFResource::CLinuxDMABUFResource(SP<CZwpLinuxDmabufV1> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setOnDestroy([this](CZwpLinuxDmabufV1* r) { PROTO::linuxDma->destroyResource(this); });
@@ -365,7 +365,7 @@ CLinuxDMABUFResource::CLinuxDMABUFResource(SP<CZwpLinuxDmabufV1> resource_) : re
         const auto RESOURCE =
             PROTO::linuxDma->m_vFeedbacks.emplace_back(makeShared<CLinuxDMABUFFeedbackResource>(makeShared<CZwpLinuxDmabufFeedbackV1>(r->client(), r->version(), id), nullptr));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::linuxDma->m_vFeedbacks.pop_back();
             return;
@@ -376,7 +376,7 @@ CLinuxDMABUFResource::CLinuxDMABUFResource(SP<CZwpLinuxDmabufV1> resource_) : re
         const auto RESOURCE = PROTO::linuxDma->m_vFeedbacks.emplace_back(
             makeShared<CLinuxDMABUFFeedbackResource>(makeShared<CZwpLinuxDmabufFeedbackV1>(r->client(), r->version(), id), CWLSurfaceResource::fromResource(surf)));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::linuxDma->m_vFeedbacks.pop_back();
             return;
@@ -386,7 +386,7 @@ CLinuxDMABUFResource::CLinuxDMABUFResource(SP<CZwpLinuxDmabufV1> resource_) : re
     resource->setCreateParams([](CZwpLinuxDmabufV1* r, uint32_t id) {
         const auto RESOURCE = PROTO::linuxDma->m_vParams.emplace_back(makeShared<CLinuxDMABBUFParamsResource>(makeShared<CZwpLinuxBufferParamsV1>(r->client(), r->version(), id)));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::linuxDma->m_vParams.pop_back();
             return;
@@ -448,7 +448,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
                     .flags   = ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT,
                     .formats = mon->output->getRenderFormats(),
                 };
-                tches.push_back(std::make_pair<>(mon, tranche));
+                tches.emplace_back(std::make_pair<>(mon, tranche));
             }
 
             static auto monitorAdded = g_pHookSystem->hookDynamic("monitorAdded", [this](void* self, SCallbackInfo& info, std::any param) {
@@ -458,7 +458,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
                      .flags   = ZWP_LINUX_DMABUF_FEEDBACK_V1_TRANCHE_FLAGS_SCANOUT,
                      .formats = pMonitor->output->getRenderFormats(),
                 };
-                formatTable->monitorTranches.push_back(std::make_pair<>(pMonitor, tranche));
+                formatTable->monitorTranches.emplace_back(std::make_pair<>(pMonitor, tranche));
                 resetFormatTable();
             });
 
@@ -469,7 +469,7 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
             });
         }
 
-        formatTable = std::make_unique<CDMABUFFormatTable>(eglTranche, tches);
+        formatTable = makeUnique<CDMABUFFormatTable>(eglTranche, tches);
 
         drmDevice* device = nullptr;
         if (drmGetDeviceFromDevId(mainDevice, 0, &device) != 0) {
@@ -501,7 +501,7 @@ void CLinuxDMABufV1Protocol::resetFormatTable() {
     LOGM(LOG, "Resetting format table");
 
     // this might be a big copy
-    auto newFormatTable = std::make_unique<CDMABUFFormatTable>(formatTable->rendererTranche, formatTable->monitorTranches);
+    auto newFormatTable = makeUnique<CDMABUFFormatTable>(formatTable->rendererTranche, formatTable->monitorTranches);
 
     for (auto const& feedback : m_vFeedbacks) {
         feedback->resource->sendFormatTable(newFormatTable->tableFD, newFormatTable->tableSize);
@@ -535,7 +535,7 @@ CLinuxDMABufV1Protocol::~CLinuxDMABufV1Protocol() {
 void CLinuxDMABufV1Protocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
     const auto RESOURCE = m_vManagers.emplace_back(makeShared<CLinuxDMABUFResource>(makeShared<CZwpLinuxDmabufV1>(client, ver, id)));
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         wl_client_post_no_memory(client);
         m_vManagers.pop_back();
         return;

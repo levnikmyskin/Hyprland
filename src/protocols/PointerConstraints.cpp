@@ -4,10 +4,13 @@
 #include "../config/ConfigValue.hpp"
 #include "../managers/SeatManager.hpp"
 #include "core/Compositor.hpp"
+#include "../managers/input/InputManager.hpp"
+#include "../render/Renderer.hpp"
+#include "../helpers/Monitor.hpp"
 
 CPointerConstraint::CPointerConstraint(SP<CZwpLockedPointerV1> resource_, SP<CWLSurfaceResource> surf, wl_resource* region_, zwpPointerConstraintsV1Lifetime lifetime_) :
     resourceL(resource_), locked(true), lifetime(lifetime_) {
-    if (!resource_->resource())
+    if UNLIKELY (!resource_->resource())
         return;
 
     resource_->setOnDestroy([this](CZwpLockedPointerV1* p) { PROTO::constraints->destroyPointerConstraint(this); });
@@ -45,8 +48,8 @@ CPointerConstraint::CPointerConstraint(SP<CZwpLockedPointerV1> resource_, SP<CWL
 }
 
 CPointerConstraint::CPointerConstraint(SP<CZwpConfinedPointerV1> resource_, SP<CWLSurfaceResource> surf, wl_resource* region_, zwpPointerConstraintsV1Lifetime lifetime_) :
-    resourceC(resource_), locked(false), lifetime(lifetime_) {
-    if (!resource_->resource())
+    resourceC(resource_), lifetime(lifetime_) {
+    if UNLIKELY (!resource_->resource())
         return;
 
     resource_->setOnDestroy([this](CZwpConfinedPointerV1* p) { PROTO::constraints->destroyPointerConstraint(this); });
@@ -182,13 +185,13 @@ bool CPointerConstraint::isLocked() {
 }
 
 Vector2D CPointerConstraint::logicPositionHint() {
-    if (!pHLSurface)
+    if UNLIKELY (!pHLSurface)
         return {};
 
     const auto SURFBOX       = pHLSurface->getSurfaceBoxGlobal();
     const auto CONSTRAINTPOS = SURFBOX.has_value() ? SURFBOX->pos() : Vector2D{};
 
-    return hintSet ? CONSTRAINTPOS + positionHint : (locked ? CONSTRAINTPOS + SURFBOX->size() / 2.f : cursorPosOnActivate);
+    return hintSet ? CONSTRAINTPOS + positionHint : cursorPosOnActivate;
 }
 
 CPointerConstraintsProtocol::CPointerConstraintsProtocol(const wl_interface* iface, const int& ver, const std::string& name) : IWaylandProtocol(iface, ver, name) {
@@ -196,7 +199,7 @@ CPointerConstraintsProtocol::CPointerConstraintsProtocol(const wl_interface* ifa
 }
 
 void CPointerConstraintsProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CZwpPointerConstraintsV1>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CZwpPointerConstraintsV1>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CZwpPointerConstraintsV1* p) { this->onManagerResourceDestroy(p->resource()); });
 
     RESOURCE->setDestroy([this](CZwpPointerConstraintsV1* pMgr) { this->onManagerResourceDestroy(pMgr->resource()); });
@@ -215,14 +218,14 @@ void CPointerConstraintsProtocol::destroyPointerConstraint(CPointerConstraint* h
 }
 
 void CPointerConstraintsProtocol::onNewConstraint(SP<CPointerConstraint> constraint, CZwpPointerConstraintsV1* pMgr) {
-    if (!constraint->good()) {
+    if UNLIKELY (!constraint->good()) {
         LOGM(ERR, "Couldn't create constraint??");
         pMgr->noMemory();
         m_vConstraints.pop_back();
         return;
     }
 
-    if (!constraint->owner()) {
+    if UNLIKELY (!constraint->owner()) {
         LOGM(ERR, "New constraint has no CWLSurface owner??");
         return;
     }
@@ -231,7 +234,7 @@ void CPointerConstraintsProtocol::onNewConstraint(SP<CPointerConstraint> constra
 
     const auto DUPES = std::count_if(m_vConstraints.begin(), m_vConstraints.end(), [OWNER](const auto& c) { return c->owner() == OWNER; });
 
-    if (DUPES > 1) {
+    if UNLIKELY (DUPES > 1) {
         LOGM(ERR, "Constraint for surface duped");
         pMgr->error(ZWP_POINTER_CONSTRAINTS_V1_ERROR_ALREADY_CONSTRAINED, "Surface already confined");
         m_vConstraints.pop_back();
@@ -240,7 +243,7 @@ void CPointerConstraintsProtocol::onNewConstraint(SP<CPointerConstraint> constra
 
     OWNER->appendConstraint(constraint);
 
-    g_pInputManager->m_vConstraints.push_back(constraint);
+    g_pInputManager->m_vConstraints.emplace_back(constraint);
 }
 
 void CPointerConstraintsProtocol::onLockPointer(CZwpPointerConstraintsV1* pMgr, uint32_t id, wl_resource* surface, wl_resource* pointer, wl_resource* region,

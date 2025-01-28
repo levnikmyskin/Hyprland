@@ -8,9 +8,15 @@
 #include "../protocols/core/Compositor.hpp"
 #include "../protocols/core/Seat.hpp"
 #include "eventLoop/EventLoopManager.hpp"
+#include "../render/pass/TexPassElement.hpp"
+#include "../managers/input/InputManager.hpp"
+#include "../managers/HookSystemManager.hpp"
+#include "../render/Renderer.hpp"
+#include "../render/OpenGL.hpp"
 #include "SeatManager.hpp"
 #include <cstring>
 #include <gbm.h>
+#include <cairo/cairo.h>
 
 CPointerManager::CPointerManager() {
     hooks.monitorAdded = g_pHookSystem->hookDynamic("monitorAdded", [this](void* self, SCallbackInfo& info, std::any data) {
@@ -375,7 +381,9 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
     auto        maxSize    = state->monitor->output->cursorPlaneSize();
     auto const& cursorSize = currentCursorImage.size;
 
-    static auto PDUMB = CConfigValue<Hyprlang::INT>("cursor:use_cpu_buffer");
+    static auto PCPUBUFFER = CConfigValue<Hyprlang::INT>("cursor:use_cpu_buffer");
+
+    const bool  shouldUseCpuBuffer = *PCPUBUFFER == 1 || (*PCPUBUFFER != 0 && g_pHyprRenderer->isNvidia());
 
     if (maxSize == Vector2D{})
         return nullptr;
@@ -389,12 +397,12 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
         maxSize = cursorSize;
 
     if (!state->monitor->cursorSwapchain || maxSize != state->monitor->cursorSwapchain->currentOptions().size ||
-        *PDUMB != (state->monitor->cursorSwapchain->getAllocator()->type() != Aquamarine::AQ_ALLOCATOR_TYPE_GBM)) {
+        shouldUseCpuBuffer != (state->monitor->cursorSwapchain->getAllocator()->type() != Aquamarine::AQ_ALLOCATOR_TYPE_GBM)) {
 
-        if (!state->monitor->cursorSwapchain || *PDUMB != (state->monitor->cursorSwapchain->getAllocator()->type() != Aquamarine::AQ_ALLOCATOR_TYPE_GBM)) {
+        if (!state->monitor->cursorSwapchain || shouldUseCpuBuffer != (state->monitor->cursorSwapchain->getAllocator()->type() != Aquamarine::AQ_ALLOCATOR_TYPE_GBM)) {
 
             auto allocator = state->monitor->output->getBackend()->preferredAllocator();
-            if (*PDUMB) {
+            if (shouldUseCpuBuffer) {
                 for (const auto& a : state->monitor->output->getBackend()->getAllocators()) {
                     if (a->type() == Aquamarine::AQ_ALLOCATOR_TYPE_DRM_DUMB) {
                         allocator = a;
@@ -414,7 +422,7 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
         options.multigpu = state->monitor->output->getBackend()->preferredAllocator()->drmFD() != g_pCompositor->m_iDRMFD;
         // We do not set the format (unless shm). If it's unset (DRM_FORMAT_INVALID) then the swapchain will pick for us,
         // but if it's set, we don't wanna change it.
-        if (*PDUMB)
+        if (shouldUseCpuBuffer)
             options.format = DRM_FORMAT_ARGB8888;
 
         if (!state->monitor->cursorSwapchain->reconfigure(options)) {
@@ -437,7 +445,7 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
         return nullptr;
     }
 
-    if (*PDUMB) {
+    if (shouldUseCpuBuffer) {
         // get the texture data if available.
         auto texData = texture->dataCopy();
         if (texData.empty()) {
@@ -448,7 +456,7 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
                 bool       flipRB = false;
 
                 if (SURFACE->current.texture) {
-                    Debug::log(TRACE, "Cursor CPU surface: format {}, expecting AR24", FormatUtils::drmFormatName(SURFACE->current.texture->m_iDrmFormat));
+                    Debug::log(TRACE, "Cursor CPU surface: format {}, expecting AR24", NFormatUtils::drmFormatName(SURFACE->current.texture->m_iDrmFormat));
                     if (SURFACE->current.texture->m_iDrmFormat == DRM_FORMAT_ABGR8888) {
                         Debug::log(TRACE, "Cursor CPU surface format AB24, will flip. WARNING: this will break on big endian!");
                         flipRB = true;
@@ -478,15 +486,62 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
 
         // then, we just yeet it into the dumb buffer
 
+        const auto DMABUF      = buf->dmabuf();
         auto [data, fmt, size] = buf->beginDataPtr(0);
 
-        memset(data, 0, size);
-        if (buf->dmabuf().size.x > texture->m_vSize.x) {
-            size_t STRIDE = 4 * texture->m_vSize.x;
-            for (int i = 0; i < texture->m_vSize.y; i++)
-                memcpy(data + i * buf->dmabuf().strides[0], texData.data() + i * STRIDE, STRIDE);
-        } else
-            memcpy(data, texData.data(), std::min(size, texData.size()));
+        auto CAIROSURFACE = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, DMABUF.size.x, DMABUF.size.y);
+        auto CAIRODATASURFACE =
+            cairo_image_surface_create_for_data((unsigned char*)texData.data(), CAIRO_FORMAT_ARGB32, texture->m_vSize.x, texture->m_vSize.y, texture->m_vSize.x * 4);
+
+        auto CAIRO = cairo_create(CAIROSURFACE);
+
+        cairo_set_operator(CAIRO, CAIRO_OPERATOR_SOURCE);
+        cairo_set_source_rgba(CAIRO, 0, 0, 0, 0);
+        cairo_rectangle(CAIRO, 0, 0, texture->m_vSize.x, texture->m_vSize.y);
+        cairo_fill(CAIRO);
+
+        const auto PATTERNPRE = cairo_pattern_create_for_surface(CAIRODATASURFACE);
+        cairo_pattern_set_filter(PATTERNPRE, CAIRO_FILTER_BILINEAR);
+        cairo_matrix_t matrixPre;
+        cairo_matrix_init_identity(&matrixPre);
+
+        const auto TR = state->monitor->transform;
+
+        // we need to scale the cursor to the right size, because it might not be (esp with XCursor)
+        const auto SCALE = texture->m_vSize / (currentCursorImage.size / currentCursorImage.scale * state->monitor->scale);
+        cairo_matrix_scale(&matrixPre, SCALE.x, SCALE.y);
+
+        if (TR) {
+            cairo_matrix_rotate(&matrixPre, M_PI_2 * (double)TR);
+
+            // FIXME: this is wrong, and doesnt work for 5, 6 and 7. (flipped + rot)
+            // cba to do it rn, does anyone fucking use that??
+            if (TR >= WL_OUTPUT_TRANSFORM_FLIPPED) {
+                cairo_matrix_scale(&matrixPre, -1, 1);
+                cairo_matrix_translate(&matrixPre, -DMABUF.size.x, 0);
+            }
+
+            if (TR == 3 || TR == 7)
+                cairo_matrix_translate(&matrixPre, -DMABUF.size.x, 0);
+            else if (TR == 2 || TR == 6)
+                cairo_matrix_translate(&matrixPre, -DMABUF.size.x, -DMABUF.size.y);
+            else if (TR == 1 || TR == 5)
+                cairo_matrix_translate(&matrixPre, 0, -DMABUF.size.y);
+        }
+
+        cairo_pattern_set_matrix(PATTERNPRE, &matrixPre);
+        cairo_set_source(CAIRO, PATTERNPRE);
+        cairo_paint(CAIRO);
+
+        cairo_surface_flush(CAIROSURFACE);
+
+        cairo_pattern_destroy(PATTERNPRE);
+
+        memcpy(data, cairo_image_surface_get_data(CAIROSURFACE), (size_t)cairo_image_surface_get_height(CAIROSURFACE) * cairo_image_surface_get_stride(CAIROSURFACE));
+
+        cairo_destroy(CAIRO);
+        cairo_surface_destroy(CAIROSURFACE);
+        cairo_surface_destroy(CAIRODATASURFACE);
 
         buf->endDataPtr();
 
@@ -505,13 +560,13 @@ SP<Aquamarine::IBuffer> CPointerManager::renderHWCursorBuffer(SP<CPointerManager
     RBO->bind();
 
     g_pHyprOpenGL->beginSimple(state->monitor.lock(), {0, 0, INT16_MAX, INT16_MAX}, RBO);
-    g_pHyprOpenGL->clear(CColor{0.F, 0.F, 0.F, 0.F});
+    g_pHyprOpenGL->clear(CHyprColor{0.F, 0.F, 0.F, 0.F});
 
     CBox xbox = {{}, Vector2D{currentCursorImage.size / currentCursorImage.scale * state->monitor->scale}.round()};
     Debug::log(TRACE, "[pointer] monitor: {}, size: {}, hw buf: {}, scale: {:.2f}, monscale: {:.2f}, xbox: {}", state->monitor->szName, currentCursorImage.size, cursorSize,
                currentCursorImage.scale, state->monitor->scale, xbox.size());
 
-    g_pHyprOpenGL->renderTexture(texture, &xbox, 1.F);
+    g_pHyprOpenGL->renderTexture(texture, xbox, 1.F);
 
     g_pHyprOpenGL->end();
     glFlush();
@@ -551,7 +606,15 @@ void CPointerManager::renderSoftwareCursorsFor(PHLMONITOR pMonitor, timespec* no
     box.x = std::round(box.x);
     box.y = std::round(box.y);
 
-    g_pHyprOpenGL->renderTextureWithDamage(texture, &box, &damage, 1.F, 0, false, false, currentCursorImage.waitTimeline, currentCursorImage.waitPoint);
+    CTexPassElement::SRenderData data;
+    data.tex          = texture;
+    data.box          = box.round();
+    data.syncTimeline = currentCursorImage.waitTimeline;
+    data.syncPoint    = currentCursorImage.waitPoint;
+    g_pHyprRenderer->m_sRenderPass.add(makeShared<CTexPassElement>(data));
+
+    currentCursorImage.waitTimeline.reset();
+    currentCursorImage.waitPoint = 0;
 
     if (currentCursorImage.surface)
         currentCursorImage.surface->resource()->frame(now);
@@ -667,7 +730,7 @@ void CPointerManager::damageIfSoftware() {
             continue;
 
         if ((mw->softwareLocks > 0 || mw->hardwareFailed || g_pConfigManager->shouldUseSoftwareCursors()) && b.overlaps({mw->monitor->vecPosition, mw->monitor->vecSize})) {
-            g_pHyprRenderer->damageBox(&b, mw->monitor->shouldSkipScheduleFrameOnMouseEvent());
+            g_pHyprRenderer->damageBox(b, mw->monitor->shouldSkipScheduleFrameOnMouseEvent());
             break;
         }
     }
@@ -781,7 +844,7 @@ void CPointerManager::onMonitorLayoutChange() {
         if (m->isMirror() || !m->m_bEnabled || !m->output)
             continue;
 
-        currentMonitorLayout.monitorBoxes.emplace_back(CBox{m->vecPosition, m->vecSize});
+        currentMonitorLayout.monitorBoxes.emplace_back(m->vecPosition, m->vecSize);
     }
 
     damageIfSoftware();
@@ -822,7 +885,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
         detachPointer(nullptr);
     });
 
-    listener->motion = pointer->pointerEvents.motion.registerListener([this] (std::any e) {
+    listener->motion = pointer->pointerEvents.motion.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SMotionEvent>(e);
 
         g_pInputManager->onMouseMoved(E);
@@ -833,7 +896,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
             g_pKeybindManager->dpms("on");
     });
 
-    listener->motionAbsolute = pointer->pointerEvents.motionAbsolute.registerListener([this] (std::any e) {
+    listener->motionAbsolute = pointer->pointerEvents.motionAbsolute.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SMotionAbsoluteEvent>(e);
 
         g_pInputManager->onMouseWarp(E);
@@ -844,7 +907,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
             g_pKeybindManager->dpms("on");
     });
 
-    listener->button = pointer->pointerEvents.button.registerListener([this] (std::any e) {
+    listener->button = pointer->pointerEvents.button.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SButtonEvent>(e);
 
         g_pInputManager->onMouseButton(E);
@@ -852,7 +915,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
         PROTO::idle->onActivity();
     });
 
-    listener->axis = pointer->pointerEvents.axis.registerListener([this] (std::any e) {
+    listener->axis = pointer->pointerEvents.axis.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SAxisEvent>(e);
 
         g_pInputManager->onMouseWheel(E);
@@ -860,7 +923,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
         PROTO::idle->onActivity();
     });
 
-    listener->frame = pointer->pointerEvents.frame.registerListener([this] (std::any e) {
+    listener->frame = pointer->pointerEvents.frame.registerListener([] (std::any e) {
         bool shouldSkip = false;
         if (!g_pSeatManager->mouse.expired() && g_pInputManager->isLocked()) {
             auto PMONITOR = g_pCompositor->m_pLastMonitor.get();
@@ -871,7 +934,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
             g_pSeatManager->sendPointerFrame();
     });
 
-    listener->swipeBegin = pointer->pointerEvents.swipeBegin.registerListener([this] (std::any e) {
+    listener->swipeBegin = pointer->pointerEvents.swipeBegin.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SSwipeBeginEvent>(e);
 
         g_pInputManager->onSwipeBegin(E);
@@ -882,7 +945,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
             g_pKeybindManager->dpms("on");
     });
 
-    listener->swipeEnd = pointer->pointerEvents.swipeEnd.registerListener([this] (std::any e) {
+    listener->swipeEnd = pointer->pointerEvents.swipeEnd.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SSwipeEndEvent>(e);
 
         g_pInputManager->onSwipeEnd(E);
@@ -890,7 +953,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
         PROTO::idle->onActivity();
     });
 
-    listener->swipeUpdate = pointer->pointerEvents.swipeUpdate.registerListener([this] (std::any e) {
+    listener->swipeUpdate = pointer->pointerEvents.swipeUpdate.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SSwipeUpdateEvent>(e);
 
         g_pInputManager->onSwipeUpdate(E);
@@ -898,7 +961,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
         PROTO::idle->onActivity();
     });
 
-    listener->pinchBegin = pointer->pointerEvents.pinchBegin.registerListener([this] (std::any e) {
+    listener->pinchBegin = pointer->pointerEvents.pinchBegin.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SPinchBeginEvent>(e);
 
         PROTO::pointerGestures->pinchBegin(E.timeMs, E.fingers);
@@ -909,7 +972,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
             g_pKeybindManager->dpms("on");
     });
 
-    listener->pinchEnd = pointer->pointerEvents.pinchEnd.registerListener([this] (std::any e) {
+    listener->pinchEnd = pointer->pointerEvents.pinchEnd.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SPinchEndEvent>(e);
 
         PROTO::pointerGestures->pinchEnd(E.timeMs, E.cancelled);
@@ -917,7 +980,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
         PROTO::idle->onActivity();
     });
 
-    listener->pinchUpdate = pointer->pointerEvents.pinchUpdate.registerListener([this] (std::any e) {
+    listener->pinchUpdate = pointer->pointerEvents.pinchUpdate.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SPinchUpdateEvent>(e);
 
         PROTO::pointerGestures->pinchUpdate(E.timeMs, E.delta, E.scale, E.rotation);
@@ -925,7 +988,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
         PROTO::idle->onActivity();
     });
 
-    listener->holdBegin = pointer->pointerEvents.holdBegin.registerListener([this] (std::any e) {
+    listener->holdBegin = pointer->pointerEvents.holdBegin.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SHoldBeginEvent>(e);
 
         PROTO::pointerGestures->holdBegin(E.timeMs, E.fingers);
@@ -933,7 +996,7 @@ void CPointerManager::attachPointer(SP<IPointer> pointer) {
         PROTO::idle->onActivity();
     });
 
-    listener->holdEnd = pointer->pointerEvents.holdEnd.registerListener([this] (std::any e) {
+    listener->holdEnd = pointer->pointerEvents.holdEnd.registerListener([] (std::any e) {
         auto E = std::any_cast<IPointer::SHoldEndEvent>(e);
 
         PROTO::pointerGestures->holdEnd(E.timeMs, E.cancelled);
@@ -961,7 +1024,7 @@ void CPointerManager::attachTouch(SP<ITouch> touch) {
         detachTouch(nullptr);
     });
 
-    listener->down = touch->touchEvents.down.registerListener([this] (std::any e) {
+    listener->down = touch->touchEvents.down.registerListener([] (std::any e) {
         auto E = std::any_cast<ITouch::SDownEvent>(e);
 
         g_pInputManager->onTouchDown(E);
@@ -972,7 +1035,7 @@ void CPointerManager::attachTouch(SP<ITouch> touch) {
             g_pKeybindManager->dpms("on");
     });
 
-    listener->up = touch->touchEvents.up.registerListener([this] (std::any e) {
+    listener->up = touch->touchEvents.up.registerListener([] (std::any e) {
         auto E = std::any_cast<ITouch::SUpEvent>(e);
 
         g_pInputManager->onTouchUp(E);
@@ -980,7 +1043,7 @@ void CPointerManager::attachTouch(SP<ITouch> touch) {
         PROTO::idle->onActivity();
     });
 
-    listener->motion = touch->touchEvents.motion.registerListener([this] (std::any e) {
+    listener->motion = touch->touchEvents.motion.registerListener([] (std::any e) {
         auto E = std::any_cast<ITouch::SMotionEvent>(e);
 
         g_pInputManager->onTouchMove(E);
@@ -988,11 +1051,11 @@ void CPointerManager::attachTouch(SP<ITouch> touch) {
         PROTO::idle->onActivity();
     });
 
-    listener->cancel = touch->touchEvents.cancel.registerListener([this] (std::any e) {
+    listener->cancel = touch->touchEvents.cancel.registerListener([] (std::any e) {
         //
     });
 
-    listener->frame = touch->touchEvents.frame.registerListener([this] (std::any e) {
+    listener->frame = touch->touchEvents.frame.registerListener([] (std::any e) {
         g_pSeatManager->sendTouchFrame();
     });
     // clang-format on
@@ -1016,7 +1079,7 @@ void CPointerManager::attachTablet(SP<CTablet> tablet) {
         detachTablet(nullptr);
     });
 
-    listener->axis = tablet->tabletEvents.axis.registerListener([this] (std::any e) {
+    listener->axis = tablet->tabletEvents.axis.registerListener([] (std::any e) {
         auto E = std::any_cast<CTablet::SAxisEvent>(e);
 
         g_pInputManager->onTabletAxis(E);
@@ -1027,7 +1090,7 @@ void CPointerManager::attachTablet(SP<CTablet> tablet) {
             g_pKeybindManager->dpms("on");
     });
 
-    listener->proximity = tablet->tabletEvents.proximity.registerListener([this] (std::any e) {
+    listener->proximity = tablet->tabletEvents.proximity.registerListener([] (std::any e) {
         auto E = std::any_cast<CTablet::SProximityEvent>(e);
 
         g_pInputManager->onTabletProximity(E);
@@ -1035,7 +1098,7 @@ void CPointerManager::attachTablet(SP<CTablet> tablet) {
         PROTO::idle->onActivity();
     });
 
-    listener->tip = tablet->tabletEvents.tip.registerListener([this] (std::any e) {
+    listener->tip = tablet->tabletEvents.tip.registerListener([] (std::any e) {
         auto E = std::any_cast<CTablet::STipEvent>(e);
 
         g_pInputManager->onTabletTip(E);
@@ -1046,7 +1109,7 @@ void CPointerManager::attachTablet(SP<CTablet> tablet) {
             g_pKeybindManager->dpms("on");
     });
 
-    listener->button = tablet->tabletEvents.button.registerListener([this] (std::any e) {
+    listener->button = tablet->tabletEvents.button.registerListener([] (std::any e) {
         auto E = std::any_cast<CTablet::SButtonEvent>(e);
 
         g_pInputManager->onTabletButton(E);
@@ -1080,7 +1143,7 @@ void CPointerManager::damageCursor(PHLMONITOR pMonitor) {
         if (b.empty())
             return;
 
-        g_pHyprRenderer->damageBox(&b);
+        g_pHyprRenderer->damageBox(b);
 
         return;
     }

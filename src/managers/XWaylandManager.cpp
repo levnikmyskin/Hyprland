@@ -47,7 +47,7 @@ void CHyprXWaylandManager::activateSurface(SP<CWLSurfaceResource> pSurface, bool
             }
             PWINDOW->m_pXWaylandSurface->activate(activate);
         }
-    } else if (PWINDOW->m_pXDGSurface)
+    } else if (PWINDOW->m_pXDGSurface && PWINDOW->m_pXDGSurface->toplevel)
         PWINDOW->m_pXDGSurface->toplevel->setActive(activate);
 }
 
@@ -55,7 +55,7 @@ void CHyprXWaylandManager::activateWindow(PHLWINDOW pWindow, bool activate) {
     if (pWindow->m_bIsX11) {
 
         if (activate) {
-            setWindowSize(pWindow, pWindow->m_vRealSize.value()); // update xwayland output pos
+            pWindow->sendWindowSize(pWindow->m_vRealSize->value(), true); // update xwayland output pos
             pWindow->m_pXWaylandSurface->setMinimized(false);
 
             if (!pWindow->isX11OverrideRedirect())
@@ -76,34 +76,18 @@ void CHyprXWaylandManager::activateWindow(PHLWINDOW pWindow, bool activate) {
         pWindow->m_pWorkspace->m_pLastFocusedWindow = pWindow;
 }
 
-void CHyprXWaylandManager::getGeometryForWindow(PHLWINDOW pWindow, CBox* pbox) {
+CBox CHyprXWaylandManager::getGeometryForWindow(PHLWINDOW pWindow) {
     if (!pWindow)
-        return;
+        return {};
 
-    if (pWindow->m_bIsX11) {
-        const auto SIZEHINTS = pWindow->m_pXWaylandSurface->sizeHints.get();
+    CBox box;
 
-        if (SIZEHINTS && !pWindow->isX11OverrideRedirect()) {
-            // WM_SIZE_HINTS' x,y,w,h is deprecated it seems.
-            // Source: https://x.org/releases/X11R7.6/doc/xorg-docs/specs/ICCCM/icccm.html#wm_normal_hints_property
-            pbox->x = pWindow->m_pXWaylandSurface->geometry.x;
-            pbox->y = pWindow->m_pXWaylandSurface->geometry.y;
+    if (pWindow->m_bIsX11)
+        box = pWindow->m_pXWaylandSurface->geometry;
+    else if (pWindow->m_pXDGSurface)
+        box = pWindow->m_pXDGSurface->current.geometry;
 
-            constexpr int ICCCM_USSize = 0x2;
-            constexpr int ICCCM_PSize  = 0x8;
-
-            if ((SIZEHINTS->flags & ICCCM_USSize) || (SIZEHINTS->flags & ICCCM_PSize)) {
-                pbox->w = SIZEHINTS->base_width;
-                pbox->h = SIZEHINTS->base_height;
-            } else {
-                pbox->w = pWindow->m_pXWaylandSurface->geometry.w;
-                pbox->h = pWindow->m_pXWaylandSurface->geometry.h;
-            }
-        } else
-            *pbox = pWindow->m_pXWaylandSurface->geometry;
-
-    } else if (pWindow->m_pXDGSurface)
-        *pbox = pWindow->m_pXDGSurface->current.geometry;
+    return box;
 }
 
 void CHyprXWaylandManager::sendCloseWindow(PHLWINDOW pWindow) {
@@ -111,44 +95,6 @@ void CHyprXWaylandManager::sendCloseWindow(PHLWINDOW pWindow) {
         pWindow->m_pXWaylandSurface->close();
     else if (pWindow->m_pXDGSurface && pWindow->m_pXDGSurface->toplevel)
         pWindow->m_pXDGSurface->toplevel->close();
-}
-
-void CHyprXWaylandManager::setWindowSize(PHLWINDOW pWindow, Vector2D size, bool force) {
-
-    static auto PXWLFORCESCALEZERO = CConfigValue<Hyprlang::INT>("xwayland:force_zero_scaling");
-
-    const auto  PMONITOR = pWindow->m_pMonitor.lock();
-
-    size = size.clamp(Vector2D{0, 0}, Vector2D{std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()});
-
-    // calculate pos
-    // TODO: this should be decoupled from setWindowSize IMO
-    Vector2D windowPos = pWindow->m_vRealPosition.value();
-
-    if (pWindow->m_bIsX11 && PMONITOR) {
-        windowPos -= PMONITOR->vecPosition; // normalize to monitor
-        if (*PXWLFORCESCALEZERO)
-            windowPos *= PMONITOR->scale;           // scale if applicable
-        windowPos += PMONITOR->vecXWaylandPosition; // move to correct position for xwayland
-    }
-
-    if (!force && pWindow->m_vPendingReportedSize == size && (windowPos == pWindow->m_vReportedPosition || !pWindow->m_bIsX11))
-        return;
-
-    pWindow->m_vReportedPosition    = windowPos;
-    pWindow->m_vPendingReportedSize = size;
-
-    pWindow->m_fX11SurfaceScaledBy = 1.0f;
-
-    if (*PXWLFORCESCALEZERO && pWindow->m_bIsX11 && PMONITOR) {
-        size *= PMONITOR->scale;
-        pWindow->m_fX11SurfaceScaledBy = PMONITOR->scale;
-    }
-
-    if (pWindow->m_bIsX11)
-        pWindow->m_pXWaylandSurface->configure({windowPos, size});
-    else if (pWindow->m_pXDGSurface->toplevel)
-        pWindow->m_vPendingSizeAcks.emplace_back(pWindow->m_pXDGSurface->toplevel->setSize(size), size.floor());
 }
 
 bool CHyprXWaylandManager::shouldBeFloated(PHLWINDOW pWindow, bool pending) {
@@ -162,7 +108,9 @@ bool CHyprXWaylandManager::shouldBeFloated(PHLWINDOW pWindow, bool pending) {
                 if (a == HYPRATOMS["_NET_WM_WINDOW_TYPE_DROPDOWN_MENU"] || a == HYPRATOMS["_NET_WM_WINDOW_TYPE_MENU"])
                     pWindow->m_bX11ShouldntFocus = true;
 
-                pWindow->m_bNoInitialFocus = true;
+                if (a != HYPRATOMS["_NET_WM_WINDOW_TYPE_DIALOG"])
+                    pWindow->m_bNoInitialFocus = true;
+
                 return true;
             }
 
@@ -213,34 +161,34 @@ void CHyprXWaylandManager::setWindowFullscreen(PHLWINDOW pWindow, bool fullscree
         pWindow->m_pXDGSurface->toplevel->setFullscreen(fullscreen);
 }
 
-Vector2D CHyprXWaylandManager::getMaxSizeForWindow(PHLWINDOW pWindow) {
-    constexpr int NO_MAX_SIZE_LIMIT = 99999;
-    if (!validMapped(pWindow) ||
-        ((pWindow->m_bIsX11 && !pWindow->m_pXWaylandSurface->sizeHints) || (!pWindow->m_bIsX11 && !pWindow->m_pXDGSurface->toplevel) ||
-         pWindow->m_sWindowData.noMaxSize.valueOrDefault()))
-        return Vector2D(NO_MAX_SIZE_LIMIT, NO_MAX_SIZE_LIMIT);
+Vector2D CHyprXWaylandManager::waylandToXWaylandCoords(const Vector2D& coord) {
+    static auto PXWLFORCESCALEZERO = CConfigValue<Hyprlang::INT>("xwayland:force_zero_scaling");
 
-    Vector2D maxSize = pWindow->m_bIsX11 ? Vector2D(pWindow->m_pXWaylandSurface->sizeHints->max_width, pWindow->m_pXWaylandSurface->sizeHints->max_height) :
-                                           pWindow->m_pXDGSurface->toplevel->current.maxSize;
+    PHLMONITOR  pMonitor     = nullptr;
+    double      bestDistance = __FLT_MAX__;
+    for (const auto& m : g_pCompositor->m_vMonitors) {
+        const auto SIZ = *PXWLFORCESCALEZERO ? m->vecTransformedSize : m->vecSize;
 
-    if (maxSize.x < 5)
-        maxSize.x = NO_MAX_SIZE_LIMIT;
-    if (maxSize.y < 5)
-        maxSize.y = NO_MAX_SIZE_LIMIT;
+        double     distance = vecToRectDistanceSquared(coord, {m->vecPosition.x, m->vecPosition.y}, {m->vecPosition.x + SIZ.x - 1, m->vecPosition.y + SIZ.y - 1});
 
-    return maxSize;
-}
+        if (distance < bestDistance) {
+            bestDistance = distance;
+            pMonitor     = m;
+        }
+    }
 
-Vector2D CHyprXWaylandManager::getMinSizeForWindow(PHLWINDOW pWindow) {
-    if (!validMapped(pWindow) || ((pWindow->m_bIsX11 && !pWindow->m_pXWaylandSurface->sizeHints) || (!pWindow->m_bIsX11 && !pWindow->m_pXDGSurface->toplevel)))
-        return Vector2D(0, 0);
+    if (!pMonitor)
+        return Vector2D{};
 
-    Vector2D minSize = pWindow->m_bIsX11 ? Vector2D(pWindow->m_pXWaylandSurface->sizeHints->min_width, pWindow->m_pXWaylandSurface->sizeHints->min_height) :
-                                           pWindow->m_pXDGSurface->toplevel->current.minSize;
+    // get local coords
+    Vector2D result = coord - pMonitor->vecPosition;
+    // if scaled, scale
+    if (*PXWLFORCESCALEZERO)
+        result *= pMonitor->scale;
+    // add pos
+    result += pMonitor->vecXWaylandPosition;
 
-    minSize = minSize.clamp({1, 1});
-
-    return minSize;
+    return result;
 }
 
 Vector2D CHyprXWaylandManager::xwaylandToWaylandCoords(const Vector2D& coord) {

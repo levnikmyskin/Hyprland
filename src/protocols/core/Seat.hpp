@@ -8,7 +8,6 @@
      - wl_touch
 */
 
-#include <memory>
 #include <vector>
 #include <cstdint>
 #include "../WaylandProtocol.hpp"
@@ -73,6 +72,7 @@ class CWLPointerResource {
     CWLPointerResource(SP<CWlPointer> resource_, SP<CWLSeatResource> owner_);
 
     bool                good();
+    int                 version();
     void                sendEnter(SP<CWLSurfaceResource> surface, const Vector2D& local);
     void                sendLeave();
     void                sendMotion(uint32_t timeMs, const Vector2D& local);

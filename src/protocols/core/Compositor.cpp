@@ -11,6 +11,7 @@
 #include "../PresentationTime.hpp"
 #include "../DRMSyncobj.hpp"
 #include "../../render/Renderer.hpp"
+#include "config/ConfigValue.hpp"
 #include <cstring>
 
 class CDefaultSurfaceRole : public ISurfaceRole {
@@ -33,7 +34,7 @@ void CWLCallbackResource::send(timespec* now) {
 }
 
 CWLRegionResource::CWLRegionResource(SP<CWlRegion> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setData(this);
@@ -55,7 +56,7 @@ SP<CWLRegionResource> CWLRegionResource::fromResource(wl_resource* res) {
 }
 
 CWLSurfaceResource::CWLSurfaceResource(SP<CWlSurface> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     pClient = resource->client();
@@ -186,20 +187,20 @@ void CWLSurfaceResource::enter(PHLMONITOR monitor) {
     if (std::find(enteredOutputs.begin(), enteredOutputs.end(), monitor) != enteredOutputs.end())
         return;
 
-    if (!PROTO::outputs.contains(monitor->szName)) {
+    if UNLIKELY (!PROTO::outputs.contains(monitor->szName)) {
         // can happen on unplug/replug
         LOGM(ERR, "enter() called on a non-existent output global");
         return;
     }
 
-    if (PROTO::outputs.at(monitor->szName)->isDefunct()) {
+    if UNLIKELY (PROTO::outputs.at(monitor->szName)->isDefunct()) {
         LOGM(ERR, "enter() called on a defunct output global");
         return;
     }
 
     auto output = PROTO::outputs.at(monitor->szName)->outputResourceFrom(pClient);
 
-    if (!output || !output->getResource() || !output->getResource()->resource()) {
+    if UNLIKELY (!output || !output->getResource() || !output->getResource()->resource()) {
         LOGM(ERR, "Cannot enter surface {:x} to {}, client hasn't bound the output", (uintptr_t)this, monitor->szName);
         return;
     }
@@ -210,12 +211,12 @@ void CWLSurfaceResource::enter(PHLMONITOR monitor) {
 }
 
 void CWLSurfaceResource::leave(PHLMONITOR monitor) {
-    if (std::find(enteredOutputs.begin(), enteredOutputs.end(), monitor) == enteredOutputs.end())
+    if UNLIKELY (std::find(enteredOutputs.begin(), enteredOutputs.end(), monitor) == enteredOutputs.end())
         return;
 
     auto output = PROTO::outputs.at(monitor->szName)->outputResourceFrom(pClient);
 
-    if (!output) {
+    if UNLIKELY (!output) {
         LOGM(ERR, "Cannot leave surface {:x} from {}, client hasn't bound the output", (uintptr_t)this, monitor->szName);
         return;
     }
@@ -331,7 +332,7 @@ uint32_t CWLSurfaceResource::id() {
 }
 
 void CWLSurfaceResource::map() {
-    if (mapped)
+    if UNLIKELY (mapped)
         return;
 
     mapped = true;
@@ -345,7 +346,7 @@ void CWLSurfaceResource::map() {
 }
 
 void CWLSurfaceResource::unmap() {
-    if (!mapped)
+    if UNLIKELY (!mapped)
         return;
 
     mapped = false;
@@ -384,10 +385,10 @@ CBox CWLSurfaceResource::extends() {
 }
 
 Vector2D CWLSurfaceResource::sourceSize() {
-    if (!current.texture)
+    if UNLIKELY (!current.texture)
         return {};
 
-    if (current.viewport.hasSource)
+    if UNLIKELY (current.viewport.hasSource)
         return current.viewport.source.size();
 
     Vector2D trc = current.transform % 2 == 1 ? Vector2D{current.bufferSize.y, current.bufferSize.x} : current.bufferSize;
@@ -395,7 +396,7 @@ Vector2D CWLSurfaceResource::sourceSize() {
 }
 
 CRegion CWLSurfaceResource::accumulateCurrentBufferDamage() {
-    if (!current.texture)
+    if UNLIKELY (!current.texture)
         return {};
 
     CRegion surfaceDamage = current.damage;
@@ -423,11 +424,14 @@ void CWLSurfaceResource::unlockPendingState() {
 }
 
 void CWLSurfaceResource::commitPendingState() {
-    auto const previousBuffer = current.buffer;
-    current                   = pending;
+    static auto PDROP          = CConfigValue<Hyprlang::INT>("render:allow_early_buffer_release");
+    auto const  previousBuffer = current.buffer;
+    current                    = pending;
     pending.damage.clear();
     pending.bufferDamage.clear();
     pending.newBuffer = false;
+    if (!*PDROP)
+        dropPendingBuffer(); // at this point current.buffer holds the same SP and we don't use pending anymore
 
     events.roleCommit.emit();
 
@@ -448,9 +452,10 @@ void CWLSurfaceResource::commitPendingState() {
 
         // release the buffer if it's synchronous as update() has done everything thats needed
         // so we can let the app know we're done.
-        if (current.buffer->buffer->isSynchronous()) {
+        // Some clients aren't ready to receive a release this early. Should be fine to release it on the next commitPendingState.
+        if (current.buffer->buffer->isSynchronous() && *PDROP) {
             dropCurrentBuffer();
-            dropPendingBuffer(); // pending atm is just a copied ref of the current, drop it too to send a release
+            dropPendingBuffer(); // at this point current.buffer holds the same SP and we don't use pending anymore
         }
     }
 
@@ -490,7 +495,7 @@ void CWLSurfaceResource::commitPendingState() {
 void CWLSurfaceResource::updateCursorShm(CRegion damage) {
     auto buf = current.buffer ? current.buffer->buffer : lastBuffer;
 
-    if (!buf)
+    if UNLIKELY (!buf)
         return;
 
     auto& shmData  = CCursorSurfaceRole::cursorPixelData(self.lock());
@@ -522,11 +527,14 @@ void CWLSurfaceResource::updateCursorShm(CRegion damage) {
     }
 }
 
-void CWLSurfaceResource::presentFeedback(timespec* when, PHLMONITOR pMonitor) {
+void CWLSurfaceResource::presentFeedback(timespec* when, PHLMONITOR pMonitor, bool discarded) {
     frame(when);
     auto FEEDBACK = makeShared<CQueuedPresentationData>(self.lock());
     FEEDBACK->attachMonitor(pMonitor);
-    FEEDBACK->presented();
+    if (discarded)
+        FEEDBACK->discarded();
+    else
+        FEEDBACK->presented();
     PROTO::presentation->queueData(FEEDBACK);
 
     if (!pMonitor || !pMonitor->outTimeline || !syncobj)
@@ -537,7 +545,7 @@ void CWLSurfaceResource::presentFeedback(timespec* when, PHLMONITOR pMonitor) {
 }
 
 CWLCompositorResource::CWLCompositorResource(SP<CWlCompositor> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setOnDestroy([this](CWlCompositor* r) { PROTO::compositor->destroyResource(this); });
@@ -545,7 +553,7 @@ CWLCompositorResource::CWLCompositorResource(SP<CWlCompositor> resource_) : reso
     resource->setCreateSurface([](CWlCompositor* r, uint32_t id) {
         const auto RESOURCE = PROTO::compositor->m_vSurfaces.emplace_back(makeShared<CWLSurfaceResource>(makeShared<CWlSurface>(r->client(), r->version(), id)));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::compositor->m_vSurfaces.pop_back();
             return;
@@ -561,7 +569,7 @@ CWLCompositorResource::CWLCompositorResource(SP<CWlCompositor> resource_) : reso
     resource->setCreateRegion([](CWlCompositor* r, uint32_t id) {
         const auto RESOURCE = PROTO::compositor->m_vRegions.emplace_back(makeShared<CWLRegionResource>(makeShared<CWlRegion>(r->client(), r->version(), id)));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::compositor->m_vRegions.pop_back();
             return;
@@ -584,7 +592,7 @@ CWLCompositorProtocol::CWLCompositorProtocol(const wl_interface* iface, const in
 void CWLCompositorProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
     const auto RESOURCE = m_vManagers.emplace_back(makeShared<CWLCompositorResource>(makeShared<CWlCompositor>(client, ver, id)));
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         wl_client_post_no_memory(client);
         m_vManagers.pop_back();
         return;

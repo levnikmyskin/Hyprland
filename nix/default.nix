@@ -5,14 +5,18 @@
   pkg-config,
   pkgconf,
   makeWrapper,
+  cmake,
   meson,
   ninja,
   aquamarine,
   binutils,
   cairo,
   git,
+  glaze,
   hyprcursor,
+  hyprgraphics,
   hyprland-protocols,
+  hyprland-qtutils,
   hyprlang,
   hyprutils,
   hyprwayland-scanner,
@@ -25,6 +29,7 @@
   mesa,
   pango,
   pciutils,
+  re2,
   systemd,
   tomlplusplus,
   udis86-hyprland,
@@ -47,12 +52,12 @@
   nvidiaPatches ? false,
   hidpiXWayland ? false,
 }: let
-  inherit (builtins) baseNameOf foldl';
+  inherit (builtins) baseNameOf foldl' readFile;
   inherit (lib.asserts) assertMsg;
   inherit (lib.attrsets) mapAttrsToList;
   inherit (lib.lists) flatten concatLists optional optionals;
   inherit (lib.sources) cleanSourceWith cleanSource;
-  inherit (lib.strings) hasSuffix makeBinPath optionalString mesonBool mesonEnable;
+  inherit (lib.strings) hasSuffix makeBinPath optionalString mesonBool mesonEnable trim;
 
   adapters = flatten [
     stdenvAdapters.useMoldLinker
@@ -64,7 +69,7 @@ in
   assert assertMsg (!nvidiaPatches) "The option `nvidiaPatches` has been removed.";
   assert assertMsg (!enableNvidiaPatches) "The option `enableNvidiaPatches` has been removed.";
   assert assertMsg (!hidpiXWayland) "The option `hidpiXWayland` has been removed. Please refer https://wiki.hyprland.org/Configuring/XWayland";
-    customStdenv.mkDerivation {
+    customStdenv.mkDerivation (finalAttrs: {
       pname = "hyprland${optionalString debug "-debug"}";
       inherit version;
 
@@ -88,6 +93,7 @@ in
       DATE = date;
       DIRTY = optionalString (commit == "") "dirty";
       HASH = commit;
+      TAG = "v${trim (readFile "${finalAttrs.src}/VERSION")}";
 
       depsBuildBuild = [
         pkg-config
@@ -98,6 +104,7 @@ in
         makeWrapper
         meson
         ninja
+        cmake # needed for glaze
         pkg-config
       ];
 
@@ -112,7 +119,9 @@ in
           aquamarine
           cairo
           git
+          glaze
           hyprcursor
+          hyprgraphics
           hyprland-protocols
           hyprlang
           hyprutils
@@ -124,6 +133,7 @@ in
           mesa
           pango
           pciutils
+          re2
           tomlplusplus
           udis86-hyprland
           wayland
@@ -153,6 +163,7 @@ in
           "xwayland" = enableXWayland;
           "legacy_renderer" = legacyRenderer;
           "uwsm" = false;
+          "hyprpm" = false;
         })
         (mapAttrsToList mesonBool {
           "b_pch" = false;
@@ -165,6 +176,7 @@ in
           wrapProgram $out/bin/Hyprland \
             --suffix PATH : ${makeBinPath [
             binutils
+            hyprland-qtutils
             pciutils
             pkgconf
           ]}
@@ -180,4 +192,4 @@ in
         platforms = lib.platforms.linux;
         mainProgram = "Hyprland";
       };
-    }
+    })

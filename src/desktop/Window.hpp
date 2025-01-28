@@ -1,10 +1,10 @@
 #pragma once
 
-#include <deque>
+#include <vector>
 #include <string>
+#include <optional>
 
 #include "../config/ConfigDataValues.hpp"
-#include "../defines.hpp"
 #include "../helpers/AnimatedVariable.hpp"
 #include "../helpers/math/Math.hpp"
 #include "../helpers/signal/Signal.hpp"
@@ -12,23 +12,25 @@
 #include "../macros.hpp"
 #include "../managers/XWaylandManager.hpp"
 #include "../render/decorations/IHyprWindowDecoration.hpp"
+#include "../render/Transformer.hpp"
 #include "DesktopTypes.hpp"
 #include "Popup.hpp"
 #include "Subsurface.hpp"
 #include "WLSurface.hpp"
 #include "Workspace.hpp"
+#include "WindowRule.hpp"
 
 class CXDGSurfaceResource;
 class CXWaylandSurface;
 
-enum eIdleInhibitMode {
+enum eIdleInhibitMode : uint8_t {
     IDLEINHIBIT_NONE = 0,
     IDLEINHIBIT_ALWAYS,
     IDLEINHIBIT_FULLSCREEN,
     IDLEINHIBIT_FOCUS
 };
 
-enum eGroupRules {
+enum eGroupRules : uint8_t {
     // effective only during first map, except for _ALWAYS variant
     GROUP_NONE        = 0,
     GROUP_SET         = 1 << 0, // Open as new group or add to focused group
@@ -40,7 +42,7 @@ enum eGroupRules {
     GROUP_OVERRIDE    = 1 << 6, // Override other rules
 };
 
-enum eGetWindowProperties {
+enum eGetWindowProperties : uint8_t {
     WINDOW_ONLY      = 0,
     RESERVED_EXTENTS = 1 << 0,
     INPUT_EXTENTS    = 1 << 1,
@@ -50,12 +52,13 @@ enum eGetWindowProperties {
     USE_PROP_TILED   = 1 << 5,
 };
 
-enum eSuppressEvents {
+enum eSuppressEvents : uint8_t {
     SUPPRESS_NONE               = 0,
     SUPPRESS_FULLSCREEN         = 1 << 0,
     SUPPRESS_MAXIMIZE           = 1 << 1,
     SUPPRESS_ACTIVATE           = 1 << 2,
     SUPPRESS_ACTIVATE_FOCUSONLY = 1 << 3,
+    SUPPRESS_FULLSCREEN_OUTPUT  = 1 << 4,
 };
 
 class IWindowTransformer;
@@ -64,7 +67,7 @@ struct SAlphaValue {
     float m_fAlpha;
     bool  m_bOverride;
 
-    float applyAlpha(float alpha) {
+    float applyAlpha(float alpha) const {
         if (m_bOverride)
             return m_fAlpha;
         else
@@ -72,8 +75,8 @@ struct SAlphaValue {
     };
 };
 
-enum eOverridePriority {
-    PRIORITY_LAYOUT,
+enum eOverridePriority : uint8_t {
+    PRIORITY_LAYOUT = 0,
     PRIORITY_WORKSPACE_RULE,
     PRIORITY_WINDOW_RULE,
     PRIORITY_SET_PROP,
@@ -85,9 +88,7 @@ class CWindowOverridableVar {
     CWindowOverridableVar(T const& value, eOverridePriority priority) {
         values[priority] = value;
     }
-    CWindowOverridableVar(T const& value) {
-        defaultValue = value;
-    }
+    CWindowOverridableVar(T const& value) : defaultValue{value} {}
 
     CWindowOverridableVar()  = default;
     ~CWindowOverridableVar() = default;
@@ -184,7 +185,11 @@ struct SWindowData {
     CWindowOverridableVar<bool>               renderUnfocused    = false;
 
     CWindowOverridableVar<int>                rounding;
+    CWindowOverridableVar<float>              roundingPower;
     CWindowOverridableVar<int>                borderSize;
+
+    CWindowOverridableVar<float>              scrollMouse;
+    CWindowOverridableVar<float>              scrollTouchpad;
 
     CWindowOverridableVar<std::string>        animationStyle;
     CWindowOverridableVar<Vector2D>           maxSize;
@@ -194,32 +199,12 @@ struct SWindowData {
     CWindowOverridableVar<CGradientValueData> inactiveBorderColor;
 };
 
-struct SWindowRule {
-    std::string szRule;
-    std::string szValue;
-
-    bool        v2 = false;
-    std::string szTitle;
-    std::string szClass;
-    std::string szInitialTitle;
-    std::string szInitialClass;
-    std::string szTag;
-    int         bX11              = -1; // -1 means "ANY"
-    int         bFloating         = -1;
-    int         bFullscreen       = -1;
-    int         bPinned           = -1;
-    int         bFocus            = -1;
-    std::string szFullscreenState = ""; // empty means any
-    std::string szOnWorkspace     = ""; // empty means any
-    std::string szWorkspace       = ""; // empty means any
-};
-
 struct SInitialWorkspaceToken {
     PHLWINDOWREF primaryOwner;
     std::string  workspace;
 };
 
-struct sFullscreenState {
+struct SFullscreenState {
     eFullscreenMode internal = FSMODE_NONE;
     eFullscreenMode client   = FSMODE_NONE;
 };
@@ -250,8 +235,8 @@ class CWindow {
     Vector2D m_vSize     = Vector2D(0, 0);
 
     // this is the real position and size used to draw the thing
-    CAnimatedVariable<Vector2D> m_vRealPosition;
-    CAnimatedVariable<Vector2D> m_vRealSize;
+    PHLANIMVAR<Vector2D> m_vRealPosition;
+    PHLANIMVAR<Vector2D> m_vRealSize;
 
     // for not spamming the protocols
     Vector2D                                     m_vReportedPosition;
@@ -278,7 +263,7 @@ class CWindow {
     bool             m_bIsFloating      = false;
     bool             m_bDraggingTiled   = false; // for dragging around tiled windows
     bool             m_bWasMaximized    = false;
-    sFullscreenState m_sFullscreenState = {.internal = FSMODE_NONE, .client = FSMODE_NONE};
+    SFullscreenState m_sFullscreenState = {.internal = FSMODE_NONE, .client = FSMODE_NONE};
     std::string      m_szTitle          = "";
     std::string      m_szClass          = "";
     std::string      m_szInitialTitle   = "";
@@ -305,32 +290,36 @@ class CWindow {
     bool m_bNoInitialFocus = false;
 
     // Fullscreen and Maximize
-    bool m_bWantsInitialFullscreen = false;
+    bool      m_bWantsInitialFullscreen        = false;
+    MONITORID m_iWantsInitialFullscreenMonitor = MONITOR_INVALID;
 
     // bitfield eSuppressEvents
     uint64_t m_eSuppressedEvents = SUPPRESS_NONE;
 
     // desktop components
-    std::unique_ptr<CSubsurface> m_pSubsurfaceHead;
-    std::unique_ptr<CPopup>      m_pPopupHead;
+    UP<CSubsurface> m_pSubsurfaceHead;
+    UP<CPopup>      m_pPopupHead;
 
     // Animated border
-    CGradientValueData       m_cRealBorderColor         = {0};
-    CGradientValueData       m_cRealBorderColorPrevious = {0};
-    CAnimatedVariable<float> m_fBorderFadeAnimationProgress;
-    CAnimatedVariable<float> m_fBorderAngleAnimationProgress;
+    CGradientValueData m_cRealBorderColor         = {0};
+    CGradientValueData m_cRealBorderColorPrevious = {0};
+    PHLANIMVAR<float>  m_fBorderFadeAnimationProgress;
+    PHLANIMVAR<float>  m_fBorderAngleAnimationProgress;
 
     // Fade in-out
-    CAnimatedVariable<float> m_fAlpha;
-    bool                     m_bFadingOut     = false;
-    bool                     m_bReadyToDelete = false;
-    Vector2D                 m_vOriginalClosedPos;  // these will be used for calculations later on in
-    Vector2D                 m_vOriginalClosedSize; // drawing the closing animations
-    SBoxExtents              m_eOriginalClosedExtents;
-    bool                     m_bAnimatingIn = false;
+    PHLANIMVAR<float> m_fAlpha;
+    bool              m_bFadingOut     = false;
+    bool              m_bReadyToDelete = false;
+    Vector2D          m_vOriginalClosedPos;  // these will be used for calculations later on in
+    Vector2D          m_vOriginalClosedSize; // drawing the closing animations
+    SBoxExtents       m_eOriginalClosedExtents;
+    bool              m_bAnimatingIn = false;
 
     // For pinned (sticky) windows
     bool m_bPinned = false;
+
+    // For preserving pinned state when fullscreening a pinned window
+    bool m_bPinFullscreened = false;
 
     // urgency hint
     bool m_bIsUrgent = false;
@@ -340,27 +329,28 @@ class CWindow {
 
     // Window decorations
     // TODO: make this a SP.
-    std::deque<std::unique_ptr<IHyprWindowDecoration>> m_dWindowDecorations;
-    std::vector<IHyprWindowDecoration*>                m_vDecosToRemove;
+    std::vector<UP<IHyprWindowDecoration>> m_dWindowDecorations;
+    std::vector<IHyprWindowDecoration*>    m_vDecosToRemove;
 
     // Special render data, rules, etc
     SWindowData m_sWindowData;
 
     // Transformers
-    std::vector<std::unique_ptr<IWindowTransformer>> m_vTransformers;
+    std::vector<UP<IWindowTransformer>> m_vTransformers;
 
     // for alpha
-    CAnimatedVariable<float> m_fActiveInactiveAlpha;
+    PHLANIMVAR<float> m_fActiveInactiveAlpha;
+    PHLANIMVAR<float> m_fMovingFromWorkspaceAlpha;
 
     // animated shadow color
-    CAnimatedVariable<CColor> m_cRealShadowColor;
+    PHLANIMVAR<CHyprColor> m_cRealShadowColor;
 
     // animated tint
-    CAnimatedVariable<float> m_fDimPercent;
+    PHLANIMVAR<float> m_fDimPercent;
 
     // animate moving to an invisible workspace
-    int                      m_iMonitorMovedFrom = -1; // -1 means not moving
-    CAnimatedVariable<float> m_fMovingToWorkspaceAlpha;
+    int               m_iMonitorMovedFrom = -1; // -1 means not moving
+    PHLANIMVAR<float> m_fMovingToWorkspaceAlpha;
 
     // swallowing
     PHLWINDOWREF m_pSwallowed;
@@ -391,47 +381,44 @@ class CWindow {
     bool     m_bTearingHint = false;
 
     // stores the currently matched window rules
-    std::vector<SWindowRule> m_vMatchedRules;
+    std::vector<SP<CWindowRule>> m_vMatchedRules;
 
     // window tags
     CTagKeeper m_tags;
 
     // For the list lookup
-    bool operator==(const CWindow& rhs) {
+    bool operator==(const CWindow& rhs) const {
         return m_pXDGSurface == rhs.m_pXDGSurface && m_pXWaylandSurface == rhs.m_pXWaylandSurface && m_vPosition == rhs.m_vPosition && m_vSize == rhs.m_vSize &&
             m_bFadingOut == rhs.m_bFadingOut;
     }
 
     // methods
-    CBox        getFullWindowBoundingBox();
-    SBoxExtents getFullWindowExtents();
-    CBox        getWindowBoxUnified(uint64_t props);
-    inline CBox getWindowMainSurfaceBox() const {
-        return {m_vRealPosition.value().x, m_vRealPosition.value().y, m_vRealSize.value().x, m_vRealSize.value().y};
-    }
+    CBox                   getFullWindowBoundingBox();
+    SBoxExtents            getFullWindowExtents();
+    CBox                   getWindowBoxUnified(uint64_t props);
     CBox                   getWindowIdealBoundingBoxIgnoreReserved();
-    void                   addWindowDeco(std::unique_ptr<IHyprWindowDecoration> deco);
+    void                   addWindowDeco(UP<IHyprWindowDecoration> deco);
     void                   updateWindowDecos();
     void                   removeWindowDeco(IHyprWindowDecoration* deco);
     void                   uncacheWindowDecos();
     bool                   checkInputOnDecos(const eInputType, const Vector2D&, std::any = {});
     pid_t                  getPID();
     IHyprWindowDecoration* getDecorationByType(eDecorationType);
-    void                   removeDecorationByType(eDecorationType);
     void                   updateToplevel();
     void                   updateSurfaceScaleTransformDetails(bool force = false);
     void                   moveToWorkspace(PHLWORKSPACE);
-    PHLWINDOW              X11TransientFor();
+    PHLWINDOW              x11TransientFor();
     void                   onUnmap();
     void                   onMap();
     void                   setHidden(bool hidden);
     bool                   isHidden();
-    void                   applyDynamicRule(const SWindowRule& r);
+    void                   applyDynamicRule(const SP<CWindowRule>& r);
     void                   updateDynamicRules();
     SBoxExtents            getFullWindowReservedArea();
     Vector2D               middle();
     bool                   opaque();
     float                  rounding();
+    float                  roundingPower();
     bool                   canBeTorn();
     void                   setSuspended(bool suspend);
     bool                   visibleOnMonitor(PHLMONITOR pMonitor);
@@ -441,19 +428,17 @@ class CWindow {
     void                   activate(bool force = false);
     int                    surfacesCount();
     void                   clampWindowSize(const std::optional<Vector2D> minSize, const std::optional<Vector2D> maxSize);
-
     bool                   isFullscreen();
     bool                   isEffectiveInternalFSMode(const eFullscreenMode);
-
     int                    getRealBorderSize();
+    float                  getScrollMouse();
+    float                  getScrollTouchpad();
     void                   updateWindowData();
     void                   updateWindowData(const struct SWorkspaceRule&);
-
-    void                   onBorderAngleAnimEnd(void* ptr);
+    void                   onBorderAngleAnimEnd(WP<Hyprutils::Animation::CBaseAnimatedVariable> pav);
     bool                   isInCurvedCorner(double x, double y);
     bool                   hasPopupAt(const Vector2D& pos);
     int                    popupsCount();
-
     void                   applyGroupRules();
     void                   createGroup();
     void                   destroyGroup();
@@ -470,17 +455,25 @@ class CWindow {
     void                   switchWithWindowInGroup(PHLWINDOW pWindow);
     void                   setAnimationsToMove();
     void                   onWorkspaceAnimUpdate();
+    void                   onFocusAnimUpdate();
     void                   onUpdateState();
     void                   onUpdateMeta();
     void                   onX11Configure(CBox box);
     void                   onResourceChangeX11();
     std::string            fetchTitle();
     std::string            fetchClass();
-    void                   warpCursor();
+    void                   warpCursor(bool force = false);
     PHLWINDOW              getSwallower();
     void                   unsetWindowData(eOverridePriority priority);
     bool                   isX11OverrideRedirect();
     bool                   isModal();
+    Vector2D               requestedMinSize();
+    Vector2D               requestedMaxSize();
+    void                   sendWindowSize(Vector2D size, bool force = false, std::optional<Vector2D> overridePos = std::nullopt);
+
+    CBox                   getWindowMainSurfaceBox() const {
+        return {m_vRealPosition->value().x, m_vRealPosition->value().y, m_vRealSize->value().x, m_vRealSize->value().y};
+    }
 
     // listeners
     void onAck(uint32_t serial);

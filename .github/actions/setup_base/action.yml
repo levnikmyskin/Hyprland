@@ -33,7 +33,10 @@ runs:
           libfontenc \
           libglvnd \
           libinput \
+          libjxl \
           libliftoff \
+          libspng \
+          libwebp \
           libxcursor \
           libxcvt \
           libxfont2 \
@@ -58,7 +61,17 @@ runs:
           xcb-util \
           xcb-util-image \
           libzip \
-          librsvg
+          librsvg \
+          re2
+
+    - name: Get glaze
+      shell: bash
+      run: |
+        git clone https://github.com/stephenberry/glaze.git
+        cd glaze
+        cmake --no-warn-unused-cli -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr -S . -B ./build
+        cmake --build ./build --config Release --target all -j`nproc 2>/dev/null || getconf NPROCESSORS_CONF`
+        cmake --install build
 
     - name: Get hyprwayland-scanner-git
       shell: bash
@@ -68,6 +81,11 @@ runs:
         cmake --no-warn-unused-cli -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr -S . -B ./build
         cmake --build ./build --config Release --target all -j`nproc 2>/dev/null || getconf NPROCESSORS_CONF`
         cmake --install build
+
+    - name: Get hyprgraphics-git
+      shell: bash
+      run: |
+        git clone https://github.com/hyprwm/hyprgraphics && cd hyprgraphics && cmake -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_INSTALL_PREFIX:PATH=/usr -B build && cmake --build build --target hyprgraphics && cmake --install build
 
     - name: Get hyprutils-git
       shell: bash

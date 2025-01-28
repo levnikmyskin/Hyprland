@@ -73,7 +73,7 @@ int                        main(int argc, char** argv, char** envp) {
 
     if (command.empty()) {
         std::println(stderr, "{}", HELP);
-        return 0;
+        return 1;
     }
 
     g_pPluginManager               = std::make_unique<CPluginManager>();
@@ -103,7 +103,7 @@ int                        main(int argc, char** argv, char** envp) {
         bool headersValid = g_pPluginManager->headersValid() == HEADERS_OK;
         bool headers      = g_pPluginManager->updateHeaders(force);
         if (headers) {
-            const auto HLVER            = g_pPluginManager->getHyprlandVersion();
+            const auto HLVER            = g_pPluginManager->getHyprlandVersion(false);
             auto       GLOBALSTATE      = DataState::getGlobalState();
             const auto COMPILEDOUTDATED = HLVER.hash != GLOBALSTATE.headersHashCompiled;
 
@@ -113,6 +113,9 @@ int                        main(int argc, char** argv, char** envp) {
                 return 1;
 
             auto ret2 = g_pPluginManager->ensurePluginsLoadState();
+
+            if (ret2 == LOADSTATE_HYPRLAND_UPDATED)
+                g_pPluginManager->notify(ICON_INFO, 0, 10000, "[hyprpm] Updated plugins, but Hyprland was updated. Please restart Hyprland.");
 
             if (ret2 != LOADSTATE_OK)
                 return 1;
@@ -130,6 +133,10 @@ int                        main(int argc, char** argv, char** envp) {
         }
 
         auto ret = g_pPluginManager->ensurePluginsLoadState();
+
+        if (ret == LOADSTATE_HYPRLAND_UPDATED)
+            g_pPluginManager->notify(ICON_INFO, 0, 10000, "[hyprpm] Enabled plugin, but Hyprland was updated. Please restart Hyprland.");
+
         if (ret != LOADSTATE_OK)
             return 1;
     } else if (command[0] == "disable") {
@@ -147,7 +154,7 @@ int                        main(int argc, char** argv, char** envp) {
         if (ret != LOADSTATE_OK)
             return 1;
     } else if (command[0] == "reload") {
-        auto ret = g_pPluginManager->ensurePluginsLoadState();
+        auto ret = g_pPluginManager->ensurePluginsLoadState(force);
 
         if (ret != LOADSTATE_OK && notify) {
             switch (ret) {
@@ -158,6 +165,7 @@ int                        main(int argc, char** argv, char** envp) {
                     break;
                 default: break;
             }
+            return 1;
         } else if (notify && !notifyFail) {
             g_pPluginManager->notify(ICON_OK, 0, 4000, "[hyprpm] Loaded plugins");
         }

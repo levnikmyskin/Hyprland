@@ -2,13 +2,21 @@
 #include "HyprDebugOverlay.hpp"
 #include "config/ConfigValue.hpp"
 #include "../Compositor.hpp"
+#include "../render/pass/TexPassElement.hpp"
+#include "../render/Renderer.hpp"
+#include "../managers/AnimationManager.hpp"
 
 CHyprDebugOverlay::CHyprDebugOverlay() {
     m_pTexture = makeShared<CTexture>();
 }
 
 void CHyprMonitorDebugOverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
-    m_dLastRenderTimes.push_back(durationUs / 1000.f);
+    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+
+    if (!*PDEBUGOVERLAY)
+        return;
+
+    m_dLastRenderTimes.emplace_back(durationUs / 1000.f);
 
     if (m_dLastRenderTimes.size() > (long unsigned int)pMonitor->refreshRate)
         m_dLastRenderTimes.pop_front();
@@ -18,7 +26,12 @@ void CHyprMonitorDebugOverlay::renderData(PHLMONITOR pMonitor, float durationUs)
 }
 
 void CHyprMonitorDebugOverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs) {
-    m_dLastRenderTimesNoOverlay.push_back(durationUs / 1000.f);
+    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+
+    if (!*PDEBUGOVERLAY)
+        return;
+
+    m_dLastRenderTimesNoOverlay.emplace_back(durationUs / 1000.f);
 
     if (m_dLastRenderTimesNoOverlay.size() > (long unsigned int)pMonitor->refreshRate)
         m_dLastRenderTimesNoOverlay.pop_front();
@@ -28,7 +41,12 @@ void CHyprMonitorDebugOverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float du
 }
 
 void CHyprMonitorDebugOverlay::frameData(PHLMONITOR pMonitor) {
-    m_dLastFrametimes.push_back(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - m_tpLastFrame).count() / 1000.f);
+    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+
+    if (!*PDEBUGOVERLAY)
+        return;
+
+    m_dLastFrametimes.emplace_back(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - m_tpLastFrame).count() / 1000.f);
 
     if (m_dLastFrametimes.size() > (long unsigned int)pMonitor->refreshRate)
         m_dLastFrametimes.pop_front();
@@ -180,23 +198,38 @@ int CHyprMonitorDebugOverlay::draw(int offset) {
     double posX = 0, posY = 0;
     cairo_get_current_point(cr, &posX, &posY);
 
-    g_pHyprRenderer->damageBox(&m_wbLastDrawnBox);
+    g_pHyprRenderer->damageBox(m_wbLastDrawnBox);
     m_wbLastDrawnBox = {(int)g_pCompositor->m_vMonitors.front()->vecPosition.x + MARGIN_LEFT - 1, (int)g_pCompositor->m_vMonitors.front()->vecPosition.y + offset + MARGIN_TOP - 1,
                         (int)maxTextW + 2, posY - offset - MARGIN_TOP + 2};
-    g_pHyprRenderer->damageBox(&m_wbLastDrawnBox);
+    g_pHyprRenderer->damageBox(m_wbLastDrawnBox);
 
     return posY - offset;
 }
 
 void CHyprDebugOverlay::renderData(PHLMONITOR pMonitor, float durationUs) {
+    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+
+    if (!*PDEBUGOVERLAY)
+        return;
+
     m_mMonitorOverlays[pMonitor].renderData(pMonitor, durationUs);
 }
 
 void CHyprDebugOverlay::renderDataNoOverlay(PHLMONITOR pMonitor, float durationUs) {
+    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+
+    if (!*PDEBUGOVERLAY)
+        return;
+
     m_mMonitorOverlays[pMonitor].renderDataNoOverlay(pMonitor, durationUs);
 }
 
 void CHyprDebugOverlay::frameData(PHLMONITOR pMonitor) {
+    static auto PDEBUGOVERLAY = CConfigValue<Hyprlang::INT>("debug:overlay");
+
+    if (!*PDEBUGOVERLAY)
+        return;
+
     m_mMonitorOverlays[pMonitor].frameData(pMonitor);
 }
 
@@ -238,6 +271,8 @@ void CHyprDebugOverlay::draw() {
 
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, PMONITOR->vecPixelSize.x, PMONITOR->vecPixelSize.y, 0, GL_RGBA, GL_UNSIGNED_BYTE, DATA);
 
-    CBox pMonBox = {0, 0, PMONITOR->vecPixelSize.x, PMONITOR->vecPixelSize.y};
-    g_pHyprOpenGL->renderTexture(m_pTexture, &pMonBox, 1.f);
+    CTexPassElement::SRenderData data;
+    data.tex = m_pTexture;
+    data.box = {0, 0, PMONITOR->vecPixelSize.x, PMONITOR->vecPixelSize.y};
+    g_pHyprRenderer->m_sRenderPass.add(makeShared<CTexPassElement>(data));
 }

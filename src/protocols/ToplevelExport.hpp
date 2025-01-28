@@ -5,7 +5,6 @@
 #include "WaylandProtocol.hpp"
 #include "Screencopy.hpp"
 
-#include <list>
 #include <vector>
 
 class CMonitor;
@@ -52,9 +51,9 @@ class CToplevelExportFrame {
     SP<CHyprlandToplevelExportFrameV1> resource;
 
     PHLWINDOW                          pWindow;
-    bool                               overlayCursor   = false;
-    bool                               ignoreDamage    = false;
-    bool                               lockedSWCursors = false;
+    bool                               cursorOverlayRequested = false;
+    bool                               m_ignoreDamage         = false;
+    bool                               lockedSWCursors        = false;
 
     WP<IHLBuffer>                      buffer;
     bool                               bufferDMA    = false;
@@ -67,6 +66,7 @@ class CToplevelExportFrame {
     bool                               copyDmabuf(timespec* now);
     bool                               copyShm(timespec* now);
     void                               share();
+    bool                               shouldOverlayCursor() const;
 
     friend class CToplevelExportProtocol;
 };

@@ -101,11 +101,17 @@ else()
 endif()
 find_package(OpenGL REQUIRED COMPONENTS ${GLES_VERSION})
 
-pkg_check_modules(hyprctl_deps REQUIRED IMPORTED_TARGET hyprutils>=0.2.4)
-
 pkg_check_modules(aquamarine_dep REQUIRED IMPORTED_TARGET aquamarine>=0.4.5)
+pkg_check_modules(hyprlang_dep REQUIRED IMPORTED_TARGET hyprlang>=0.3.2)
+pkg_check_modules(hyprcursor_dep REQUIRED IMPORTED_TARGET hyprcursor>=0.1.7)
+pkg_check_modules(hyprutils_dep REQUIRED IMPORTED_TARGET hyprutils>=0.4.0)
+pkg_check_modules(hyprgraphics_dep REQUIRED IMPORTED_TARGET hyprgraphics>=0.1.1)
 
 add_compile_definitions(AQUAMARINE_VERSION="${aquamarine_dep_VERSION}")
+add_compile_definitions(HYPRLANG_VERSION="${hyprlang_dep_VERSION}")
+add_compile_definitions(HYPRUTILS_VERSION="${hyprutils_dep_VERSION}")
+add_compile_definitions(HYPRCURSOR_VERSION="${hyprcursor_dep_VERSION}")
+add_compile_definitions(HYPRGRAPHICS_VERSION="${hyprgraphics_dep_VERSION}")
 
 pkg_check_modules(
   deps
@@ -124,9 +130,7 @@ pkg_check_modules(
   libinput
   gbm
   gio-2.0
-  hyprlang>=0.3.2
-  hyprcursor>=0.1.7
-  hyprutils>=0.2.3)
+  re2)
 
 find_package(hyprwayland-scanner 0.3.10 REQUIRED)
 
@@ -193,6 +197,12 @@ if(NOT HAS_TIMERFD AND epoll_FOUND)
   target_link_libraries(Hyprland PkgConfig::epoll)
 endif()
 
+check_include_file("sys/inotify.h" HAS_INOTIFY)
+pkg_check_modules(inotify IMPORTED_TARGET libinotify)
+if(NOT HAS_INOTIFY AND inotify_FOUND)
+  target_link_libraries(Hyprland PkgConfig::inotify)
+endif()
+
 if(LEGACY_RENDERER)
   message(STATUS "Using the legacy GLES2 renderer!")
   add_compile_definitions(LEGACY_RENDERER)
@@ -244,7 +254,15 @@ target_precompile_headers(Hyprland PRIVATE
 
 message(STATUS "Setting link libraries")
 
-target_link_libraries(Hyprland rt PkgConfig::aquamarine_dep PkgConfig::deps)
+target_link_libraries(
+  Hyprland
+  rt
+  PkgConfig::aquamarine_dep
+  PkgConfig::hyprlang_dep
+  PkgConfig::hyprutils_dep
+  PkgConfig::hyprcursor_dep
+  PkgConfig::hyprgraphics_dep
+  PkgConfig::deps)
 if(udis_dep_FOUND)
   target_link_libraries(Hyprland PkgConfig::udis_dep)
 else()
@@ -286,7 +304,7 @@ endfunction()
 
 target_link_libraries(Hyprland OpenGL::EGL OpenGL::GL Threads::Threads)
 
-pkg_check_modules(hyprland_protocols_dep hyprland-protocols>=0.4.0)
+pkg_check_modules(hyprland_protocols_dep hyprland-protocols>=0.6.0)
 if(hyprland_protocols_dep_FOUND)
   pkg_get_variable(HYPRLAND_PROTOCOLS hyprland-protocols pkgdatadir)
   message(STATUS "hyprland-protocols dependency set to ${HYPRLAND_PROTOCOLS}")
@@ -312,8 +330,12 @@ protocolnew("protocols" "kde-server-decoration" true)
 protocolnew("protocols" "wlr-data-control-unstable-v1" true)
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-focus-grab-v1" true)
 protocolnew("protocols" "wlr-layer-shell-unstable-v1" true)
+protocolnew("protocols" "xx-color-management-v4" true)
+protocolnew("protocols" "frog-color-management-v1" true)
 protocolnew("protocols" "wayland-drm" true)
 protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-ctm-control-v1" true)
+protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-surface-v1" true)
+protocolnew("${HYPRLAND_PROTOCOLS}/protocols" "hyprland-lock-notify-v1" true)
 
 protocolnew("staging/tearing-control" "tearing-control-v1" false)
 protocolnew("staging/fractional-scale" "fractional-scale-v1" false)
@@ -351,7 +373,13 @@ protocolwayland()
 
 # tools
 add_subdirectory(hyprctl)
-add_subdirectory(hyprpm)
+
+if(NO_HYPRPM)
+  message(STATUS "hyprpm is disabled")
+else()
+  add_subdirectory(hyprpm)
+  message(STATUS "hyprpm is enabled (NO_HYPRPM not defined)")
+endif()
 
 # binary and symlink
 install(TARGETS Hyprland)
@@ -362,7 +390,6 @@ install(
         ${CMAKE_INSTALL_FULL_BINDIR}/Hyprland \
         \"\$ENV{DESTDIR}${CMAKE_INSTALL_FULL_BINDIR}/hyprland\" \
         )")
-
 # session file
 install(FILES ${CMAKE_SOURCE_DIR}/example/hyprland.desktop
         DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/wayland-sessions)

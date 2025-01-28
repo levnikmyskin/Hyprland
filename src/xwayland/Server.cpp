@@ -3,14 +3,13 @@
 
 #include <format>
 #include <string>
-#include <errno.h>
+#include <cerrno>
 #include <fcntl.h>
-#include <stdio.h>
+#include <cstdio>
 #include <cstring>
-#include <signal.h>
-#include <stddef.h>
-#include <stdint.h>
-#include <stdlib.h>
+#include <csignal>
+#include <cstddef>
+#include <cstdlib>
 #include <sys/un.h>
 #include <unistd.h>
 #include <exception>
@@ -52,13 +51,13 @@ static bool   setCloseOnExec(int fd, bool cloexec) {
     return true;
 }
 
-void cleanUpSocket(int fd, const char* path) {
+static void cleanUpSocket(int fd, const char* path) {
     close(fd);
     if (path[0])
         unlink(path);
 }
 
-inline void closeSocketSafely(int& fd) {
+static inline void closeSocketSafely(int& fd) {
     if (fd >= 0)
         close(fd);
 }
@@ -94,7 +93,7 @@ static int createSocket(struct sockaddr_un* addr, size_t path_size) {
     return fd;
 }
 
-static bool checkPermissionsForSocketDir(void) {
+static bool checkPermissionsForSocketDir() {
     struct stat buf;
 
     if (lstat("/tmp/.X11-unix", &buf)) {
@@ -107,7 +106,7 @@ static bool checkPermissionsForSocketDir(void) {
         return false;
     }
 
-    if (!((buf.st_uid == 0) || (buf.st_uid == getuid()))) {
+    if ((buf.st_uid != 0) && (buf.st_uid != getuid())) {
         Debug::log(ERR, "X11 socket dir is not owned by root or current user");
         return false;
     }
@@ -149,15 +148,8 @@ static bool openSockets(std::array<int, 2>& sockets, int display) {
     sockaddr_un addr = {.sun_family = AF_UNIX};
     std::string path;
 
-#ifdef __linux__
-    // cursed...
-    addr.sun_path[0] = 0;
-    path             = getSocketPath(display, true);
-    strncpy(addr.sun_path + 1, path.c_str(), path.length() + 1);
-#else
     path = getSocketPath(display, false);
     strncpy(addr.sun_path, path.c_str(), path.length() + 1);
-#endif
 
     sockets[0] = createSocket(&addr, path.length());
     if (sockets[0] < 0)
@@ -450,7 +442,7 @@ int CXWaylandServer::ready(int fd, uint32_t mask) {
 
     // start the wm
     if (!g_pXWayland->pWM)
-        g_pXWayland->pWM = std::make_unique<CXWM>();
+        g_pXWayland->pWM = makeUnique<CXWM>();
 
     g_pCursorManager->setXWaylandCursor();
 

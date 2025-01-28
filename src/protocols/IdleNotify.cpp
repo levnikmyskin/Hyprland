@@ -11,7 +11,7 @@ static int onTimer(SP<CEventLoopTimer> self, void* data) {
 }
 
 CExtIdleNotification::CExtIdleNotification(SP<CExtIdleNotificationV1> resource_, uint32_t timeoutMs_) : resource(resource_), timeoutMs(timeoutMs_) {
-    if (!resource_->resource())
+    if UNLIKELY (!resource_->resource())
         return;
 
     resource->setDestroy([this](CExtIdleNotificationV1* r) { PROTO::idle->destroyNotification(this); });
@@ -59,7 +59,7 @@ CIdleNotifyProtocol::CIdleNotifyProtocol(const wl_interface* iface, const int& v
 }
 
 void CIdleNotifyProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CExtIdleNotifierV1>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CExtIdleNotifierV1>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CExtIdleNotifierV1* p) { this->onManagerResourceDestroy(p->resource()); });
 
     RESOURCE->setDestroy([this](CExtIdleNotifierV1* pMgr) { this->onManagerResourceDestroy(pMgr->resource()); });
@@ -78,7 +78,7 @@ void CIdleNotifyProtocol::onGetNotification(CExtIdleNotifierV1* pMgr, uint32_t i
     const auto CLIENT   = pMgr->client();
     const auto RESOURCE = m_vNotifications.emplace_back(makeShared<CExtIdleNotification>(makeShared<CExtIdleNotificationV1>(CLIENT, pMgr->version(), id), timeout)).get();
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         m_vNotifications.pop_back();
         return;

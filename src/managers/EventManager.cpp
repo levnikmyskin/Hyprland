@@ -10,8 +10,7 @@
 #include <unistd.h>
 #include <cstring>
 
-CEventManager::CEventManager() {
-    m_iSocketFD = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+CEventManager::CEventManager() : m_iSocketFD(socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0)) {
     if (m_iSocketFD < 0) {
         Debug::log(ERR, "Couldn't start the Hyprland Socket 2. (1) IPC will not work.");
         return;
@@ -117,7 +116,7 @@ int CEventManager::onClientEvent(int fd, uint32_t mask) {
             if (write(CLIENTIT->fd, event->c_str(), event->length()) < 0)
                 break;
 
-            CLIENTIT->events.pop_front();
+            CLIENTIT->events.erase(CLIENTIT->events.begin());
         }
 
         // stop polling when we sent all events

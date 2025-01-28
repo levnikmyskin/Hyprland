@@ -1,8 +1,10 @@
 #include "LayerShell.hpp"
 #include "../Compositor.hpp"
+#include "../desktop/LayerSurface.hpp"
 #include "XDGShell.hpp"
 #include "core/Compositor.hpp"
 #include "core/Output.hpp"
+#include "../helpers/Monitor.hpp"
 
 void CLayerShellResource::SState::reset() {
     anchor        = 0;
@@ -16,7 +18,7 @@ void CLayerShellResource::SState::reset() {
 
 CLayerShellResource::CLayerShellResource(SP<CZwlrLayerSurfaceV1> resource_, SP<CWLSurfaceResource> surf_, std::string namespace_, PHLMONITOR pMonitor,
                                          zwlrLayerShellV1Layer layer) : layerNamespace(namespace_), surface(surf_), resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     current.layer = layer;
@@ -199,7 +201,7 @@ CLayerShellProtocol::CLayerShellProtocol(const wl_interface* iface, const int& v
 }
 
 void CLayerShellProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CZwlrLayerShellV1>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CZwlrLayerShellV1>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CZwlrLayerShellV1* p) { this->onManagerResourceDestroy(p->resource()); });
 
     RESOURCE->setDestroy([this](CZwlrLayerShellV1* pMgr) { this->onManagerResourceDestroy(pMgr->resource()); });
@@ -221,19 +223,24 @@ void CLayerShellProtocol::onGetLayerSurface(CZwlrLayerShellV1* pMgr, uint32_t id
     const auto PMONITOR = output ? CWLOutputResource::fromResource(output)->monitor.lock() : nullptr;
     auto       SURF     = CWLSurfaceResource::fromResource(surface);
 
-    if (!SURF) {
+    if UNLIKELY (!SURF) {
         pMgr->error(-1, "Invalid surface");
         return;
     }
 
-    if (SURF->role->role() != SURFACE_ROLE_UNASSIGNED) {
+    if UNLIKELY (SURF->role->role() != SURFACE_ROLE_UNASSIGNED) {
         pMgr->error(-1, "Surface already has a different role");
+        return;
+    }
+
+    if UNLIKELY (layer > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
+        pMgr->error(ZWLR_LAYER_SHELL_V1_ERROR_INVALID_LAYER, "Invalid layer");
         return;
     }
 
     const auto RESOURCE = m_vLayers.emplace_back(makeShared<CLayerShellResource>(makeShared<CZwlrLayerSurfaceV1>(CLIENT, pMgr->version(), id), SURF, namespace_, PMONITOR, layer));
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         m_vLayers.pop_back();
         return;

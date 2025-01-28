@@ -5,6 +5,7 @@
 #include "../../protocols/TextInputV1.hpp"
 #include "../../protocols/InputMethodV2.hpp"
 #include "../../protocols/core/Compositor.hpp"
+#include "../../managers/HookSystemManager.hpp"
 
 CInputMethodRelay::CInputMethodRelay() {
     static auto P =
@@ -49,7 +50,7 @@ void CInputMethodRelay::onNewIME(SP<CInputMethodV2> pIME) {
     });
 
     listeners.newPopup = pIME->events.newPopup.registerListener([this](std::any d) {
-        m_vIMEPopups.emplace_back(std::make_unique<CInputPopup>(std::any_cast<SP<CInputMethodPopupV2>>(d)));
+        m_vIMEPopups.emplace_back(makeUnique<CInputPopup>(std::any_cast<SP<CInputMethodPopupV2>>(d)));
 
         Debug::log(LOG, "New input popup");
     });
@@ -66,10 +67,6 @@ void CInputMethodRelay::onNewIME(SP<CInputMethodV2> pIME) {
         else
             ti->onEnabled(g_pCompositor->m_pLastFocus.lock());
     }
-}
-
-void CInputMethodRelay::setIMEPopupFocus(CInputPopup* pPopup, SP<CWLSurfaceResource> pSurface) {
-    pPopup->onCommit();
 }
 
 void CInputMethodRelay::removePopup(CInputPopup* pPopup) {
@@ -89,11 +86,11 @@ CTextInput* CInputMethodRelay::getFocusedTextInput() {
 }
 
 void CInputMethodRelay::onNewTextInput(WP<CTextInputV3> tiv3) {
-    m_vTextInputs.emplace_back(std::make_unique<CTextInput>(tiv3));
+    m_vTextInputs.emplace_back(makeUnique<CTextInput>(tiv3));
 }
 
 void CInputMethodRelay::onNewTextInput(WP<CTextInputV1> pTIV1) {
-    m_vTextInputs.emplace_back(std::make_unique<CTextInput>(pTIV1));
+    m_vTextInputs.emplace_back(makeUnique<CTextInput>(pTIV1));
 }
 
 void CInputMethodRelay::removeTextInput(CTextInput* pInput) {

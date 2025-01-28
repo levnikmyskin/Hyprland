@@ -2,7 +2,7 @@
 #include "core/Output.hpp"
 
 CVirtualPointerV1Resource::CVirtualPointerV1Resource(SP<CZwlrVirtualPointerV1> resource_, PHLMONITORREF boundOutput_) : boundOutput(boundOutput_), resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setDestroy([this](CZwlrVirtualPointerV1* r) {
@@ -41,7 +41,7 @@ CVirtualPointerV1Resource::CVirtualPointerV1Resource(SP<CZwlrVirtualPointerV1> r
     });
 
     resource->setAxis([this](CZwlrVirtualPointerV1* r, uint32_t timeMs, uint32_t axis_, wl_fixed_t value) {
-        if (axis > WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+        if UNLIKELY (axis > WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
             r->error(ZWLR_VIRTUAL_POINTER_V1_ERROR_INVALID_AXIS, "Invalid axis");
             return;
         }
@@ -64,7 +64,7 @@ CVirtualPointerV1Resource::CVirtualPointerV1Resource(SP<CZwlrVirtualPointerV1> r
     resource->setAxisSource([this](CZwlrVirtualPointerV1* r, uint32_t source) { axisEvents[axis].source = (wl_pointer_axis_source)source; });
 
     resource->setAxisStop([this](CZwlrVirtualPointerV1* r, uint32_t timeMs, uint32_t axis_) {
-        if (axis > WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+        if UNLIKELY (axis > WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
             r->error(ZWLR_VIRTUAL_POINTER_V1_ERROR_INVALID_AXIS, "Invalid axis");
             return;
         }
@@ -77,7 +77,7 @@ CVirtualPointerV1Resource::CVirtualPointerV1Resource(SP<CZwlrVirtualPointerV1> r
     });
 
     resource->setAxisDiscrete([this](CZwlrVirtualPointerV1* r, uint32_t timeMs, uint32_t axis_, wl_fixed_t value, int32_t discrete) {
-        if (axis > WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+        if UNLIKELY (axis > WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
             r->error(ZWLR_VIRTUAL_POINTER_V1_ERROR_INVALID_AXIS, "Invalid axis");
             return;
         }
@@ -107,7 +107,7 @@ CVirtualPointerProtocol::CVirtualPointerProtocol(const wl_interface* iface, cons
 }
 
 void CVirtualPointerProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto RESOURCE = m_vManagers.emplace_back(std::make_unique<CZwlrVirtualPointerManagerV1>(client, ver, id)).get();
+    const auto RESOURCE = m_vManagers.emplace_back(makeUnique<CZwlrVirtualPointerManagerV1>(client, ver, id)).get();
     RESOURCE->setOnDestroy([this](CZwlrVirtualPointerManagerV1* p) { this->onManagerResourceDestroy(p->resource()); });
     RESOURCE->setDestroy([this](CZwlrVirtualPointerManagerV1* p) { this->onManagerResourceDestroy(p->resource()); });
 
@@ -138,7 +138,7 @@ void CVirtualPointerProtocol::onCreatePointer(CZwlrVirtualPointerManagerV1* pMgr
 
     const auto RESOURCE = m_vPointers.emplace_back(makeShared<CVirtualPointerV1Resource>(makeShared<CZwlrVirtualPointerV1>(pMgr->client(), pMgr->version(), id), output));
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         pMgr->noMemory();
         m_vPointers.pop_back();
         return;

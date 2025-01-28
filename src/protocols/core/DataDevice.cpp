@@ -2,12 +2,20 @@
 #include <algorithm>
 #include "../../managers/SeatManager.hpp"
 #include "../../managers/PointerManager.hpp"
+#include "../../managers/eventLoop/EventLoopManager.hpp"
 #include "../../Compositor.hpp"
+#include "../../render/pass/TexPassElement.hpp"
 #include "Seat.hpp"
 #include "Compositor.hpp"
+#include "../../xwayland/XWayland.hpp"
+#include "../../xwayland/Server.hpp"
+#include "../../managers/input/InputManager.hpp"
+#include "../../managers/HookSystemManager.hpp"
+#include "../../helpers/Monitor.hpp"
+#include "../../render/Renderer.hpp"
 
 CWLDataOfferResource::CWLDataOfferResource(SP<CWlDataOffer> resource_, SP<IDataSource> source_) : source(source_), resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setDestroy([this](CWlDataOffer* r) { PROTO::data->destroyResource(this); });
@@ -102,8 +110,24 @@ void CWLDataOfferResource::sendData() {
     }
 }
 
+eDataSourceType CWLDataOfferResource::type() {
+    return DATA_SOURCE_TYPE_WAYLAND;
+}
+
+SP<CWLDataOfferResource> CWLDataOfferResource::getWayland() {
+    return self.lock();
+}
+
+SP<CX11DataOffer> CWLDataOfferResource::getX11() {
+    return nullptr;
+}
+
+SP<IDataSource> CWLDataOfferResource::getSource() {
+    return source.lock();
+}
+
 CWLDataSourceResource::CWLDataSourceResource(SP<CWlDataSource> resource_, SP<CWLDataDeviceResource> device_) : device(device_), resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setData(this);
@@ -119,7 +143,7 @@ CWLDataSourceResource::CWLDataSourceResource(SP<CWlDataSource> resource_, SP<CWL
         PROTO::data->destroyResource(this);
     });
 
-    resource->setOffer([this](CWlDataSource* r, const char* mime) { mimeTypes.push_back(mime); });
+    resource->setOffer([this](CWlDataSource* r, const char* mime) { mimeTypes.emplace_back(mime); });
     resource->setSetActions([this](CWlDataSource* r, uint32_t a) {
         LOGM(LOG, "DataSource {:x} actions {}", (uintptr_t)this, a);
         supportedActions = a;
@@ -208,8 +232,12 @@ uint32_t CWLDataSourceResource::actions() {
     return supportedActions;
 }
 
+eDataSourceType CWLDataSourceResource::type() {
+    return DATA_SOURCE_TYPE_WAYLAND;
+}
+
 CWLDataDeviceResource::CWLDataDeviceResource(SP<CWlDataDevice> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setRelease([this](CWlDataDevice* r) { PROTO::data->destroyResource(this); });
@@ -259,15 +287,18 @@ wl_client* CWLDataDeviceResource::client() {
     return pClient;
 }
 
-void CWLDataDeviceResource::sendDataOffer(SP<CWLDataOfferResource> offer) {
-    if (offer)
-        resource->sendDataOffer(offer->resource.get());
-    else
+void CWLDataDeviceResource::sendDataOffer(SP<IDataOffer> offer) {
+    if (!offer)
         resource->sendDataOfferRaw(nullptr);
+    else if (const auto WL = offer->getWayland(); WL)
+        resource->sendDataOffer(WL->resource.get());
+    //FIXME: X11
 }
 
-void CWLDataDeviceResource::sendEnter(uint32_t serial, SP<CWLSurfaceResource> surf, const Vector2D& local, SP<CWLDataOfferResource> offer) {
-    resource->sendEnterRaw(serial, surf->getResource()->resource(), wl_fixed_from_double(local.x), wl_fixed_from_double(local.y), offer->resource->resource());
+void CWLDataDeviceResource::sendEnter(uint32_t serial, SP<CWLSurfaceResource> surf, const Vector2D& local, SP<IDataOffer> offer) {
+    if (const auto WL = offer->getWayland(); WL)
+        resource->sendEnterRaw(serial, surf->getResource()->resource(), wl_fixed_from_double(local.x), wl_fixed_from_double(local.y), WL->resource->resource());
+    // FIXME: X11
 }
 
 void CWLDataDeviceResource::sendLeave() {
@@ -282,15 +313,27 @@ void CWLDataDeviceResource::sendDrop() {
     resource->sendDrop();
 }
 
-void CWLDataDeviceResource::sendSelection(SP<CWLDataOfferResource> offer) {
+void CWLDataDeviceResource::sendSelection(SP<IDataOffer> offer) {
     if (!offer)
         resource->sendSelectionRaw(nullptr);
-    else
-        resource->sendSelection(offer->resource.get());
+    else if (const auto WL = offer->getWayland(); WL)
+        resource->sendSelection(WL->resource.get());
+}
+
+eDataSourceType CWLDataDeviceResource::type() {
+    return DATA_SOURCE_TYPE_WAYLAND;
+}
+
+SP<CWLDataDeviceResource> CWLDataDeviceResource::getWayland() {
+    return self.lock();
+}
+
+SP<CX11DataDevice> CWLDataDeviceResource::getX11() {
+    return nullptr;
 }
 
 CWLDataDeviceManagerResource::CWLDataDeviceManagerResource(SP<CWlDataDeviceManager> resource_) : resource(resource_) {
-    if (!good())
+    if UNLIKELY (!good())
         return;
 
     resource->setOnDestroy([this](CWlDataDeviceManager* r) { PROTO::data->destroyResource(this); });
@@ -300,7 +343,7 @@ CWLDataDeviceManagerResource::CWLDataDeviceManagerResource(SP<CWlDataDeviceManag
 
         const auto RESOURCE = PROTO::data->m_vSources.emplace_back(makeShared<CWLDataSourceResource>(makeShared<CWlDataSource>(r->client(), r->version(), id), device.lock()));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::data->m_vSources.pop_back();
             return;
@@ -311,7 +354,7 @@ CWLDataDeviceManagerResource::CWLDataDeviceManagerResource(SP<CWlDataDeviceManag
 
         RESOURCE->self = RESOURCE;
 
-        sources.push_back(RESOURCE);
+        sources.emplace_back(RESOURCE);
 
         LOGM(LOG, "New data source bound at {:x}", (uintptr_t)RESOURCE.get());
     });
@@ -319,7 +362,7 @@ CWLDataDeviceManagerResource::CWLDataDeviceManagerResource(SP<CWlDataDeviceManag
     resource->setGetDataDevice([this](CWlDataDeviceManager* r, uint32_t id, wl_resource* seat) {
         const auto RESOURCE = PROTO::data->m_vDevices.emplace_back(makeShared<CWLDataDeviceResource>(makeShared<CWlDataDevice>(r->client(), r->version(), id)));
 
-        if (!RESOURCE->good()) {
+        if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
             PROTO::data->m_vDevices.pop_back();
             return;
@@ -342,23 +385,22 @@ bool CWLDataDeviceManagerResource::good() {
 }
 
 CWLDataDeviceProtocol::CWLDataDeviceProtocol(const wl_interface* iface, const int& ver, const std::string& name) : IWaylandProtocol(iface, ver, name) {
-    ;
+    g_pEventLoopManager->doLater([this]() {
+        listeners.onKeyboardFocusChange   = g_pSeatManager->events.keyboardFocusChange.registerListener([this](std::any d) { onKeyboardFocus(); });
+        listeners.onDndPointerFocusChange = g_pSeatManager->events.dndPointerFocusChange.registerListener([this](std::any d) { onDndPointerFocus(); });
+    });
 }
 
 void CWLDataDeviceProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
     const auto RESOURCE = m_vManagers.emplace_back(makeShared<CWLDataDeviceManagerResource>(makeShared<CWlDataDeviceManager>(client, ver, id)));
 
-    if (!RESOURCE->good()) {
+    if UNLIKELY (!RESOURCE->good()) {
         wl_client_post_no_memory(client);
         m_vManagers.pop_back();
         return;
     }
 
     LOGM(LOG, "New datamgr resource bound at {:x}", (uintptr_t)RESOURCE.get());
-
-    // we need to do it here because protocols come before seatMgr
-    if (!listeners.onKeyboardFocusChange)
-        listeners.onKeyboardFocusChange = g_pSeatManager->events.keyboardFocusChange.registerListener([this](std::any d) { this->onKeyboardFocus(); });
 }
 
 void CWLDataDeviceProtocol::destroyResource(CWLDataDeviceManagerResource* seat) {
@@ -377,32 +419,53 @@ void CWLDataDeviceProtocol::destroyResource(CWLDataOfferResource* resource) {
     std::erase_if(m_vOffers, [&](const auto& other) { return other.get() == resource; });
 }
 
-SP<CWLDataDeviceResource> CWLDataDeviceProtocol::dataDeviceForClient(wl_client* c) {
+SP<IDataDevice> CWLDataDeviceProtocol::dataDeviceForClient(wl_client* c) {
+#ifndef NO_XWAYLAND
+    if (g_pXWayland->pServer && c == g_pXWayland->pServer->xwaylandClient)
+        return g_pXWayland->pWM->getDataDevice();
+#endif
+
     auto it = std::find_if(m_vDevices.begin(), m_vDevices.end(), [c](const auto& e) { return e->client() == c; });
     if (it == m_vDevices.end())
         return nullptr;
     return *it;
 }
 
-void CWLDataDeviceProtocol::sendSelectionToDevice(SP<CWLDataDeviceResource> dev, SP<IDataSource> sel) {
+void CWLDataDeviceProtocol::sendSelectionToDevice(SP<IDataDevice> dev, SP<IDataSource> sel) {
     if (!sel) {
         dev->sendSelection(nullptr);
         return;
     }
 
-    const auto OFFER = m_vOffers.emplace_back(makeShared<CWLDataOfferResource>(makeShared<CWlDataOffer>(dev->resource->client(), dev->resource->version(), 0), sel));
+    SP<IDataOffer> offer;
 
-    if (!OFFER->good()) {
-        dev->resource->noMemory();
-        m_vOffers.pop_back();
+    if (const auto WL = dev->getWayland(); WL) {
+        const auto OFFER = m_vOffers.emplace_back(makeShared<CWLDataOfferResource>(makeShared<CWlDataOffer>(WL->resource->client(), WL->resource->version(), 0), sel));
+        if UNLIKELY (!OFFER->good()) {
+            WL->resource->noMemory();
+            m_vOffers.pop_back();
+            return;
+        }
+        OFFER->source = sel;
+        OFFER->self   = OFFER;
+        offer         = OFFER;
+    }
+#ifndef NO_XWAYLAND
+    else if (const auto X11 = dev->getX11(); X11)
+        offer = g_pXWayland->pWM->createX11DataOffer(g_pSeatManager->state.keyboardFocus.lock(), sel);
+#endif
+
+    if UNLIKELY (!offer) {
+        LOGM(ERR, "No offer could be created in sendSelectionToDevice");
         return;
     }
 
-    LOGM(LOG, "New offer {:x} for data source {:x}", (uintptr_t)OFFER.get(), (uintptr_t)sel.get());
+    LOGM(LOG, "New {} offer {:x} for data source {:x}", offer->type() == DATA_SOURCE_TYPE_WAYLAND ? "wayland" : "X11", (uintptr_t)offer.get(), (uintptr_t)sel.get());
 
-    dev->sendDataOffer(OFFER);
-    OFFER->sendData();
-    dev->sendSelection(OFFER);
+    dev->sendDataOffer(offer);
+    if (const auto WL = offer->getWayland(); WL)
+        WL->sendData();
+    dev->sendSelection(offer);
 }
 
 void CWLDataDeviceProtocol::onDestroyDataSource(WP<CWLDataSourceResource> source) {
@@ -424,7 +487,7 @@ void CWLDataDeviceProtocol::setSelection(SP<IDataSource> source) {
             return;
 
         auto DESTDEVICE = dataDeviceForClient(g_pSeatManager->state.keyboardFocusResource->client());
-        if (DESTDEVICE)
+        if (DESTDEVICE && DESTDEVICE->type() == DATA_SOURCE_TYPE_WAYLAND)
             sendSelectionToDevice(DESTDEVICE, nullptr);
 
         return;
@@ -439,6 +502,11 @@ void CWLDataDeviceProtocol::setSelection(SP<IDataSource> source) {
 
     if (!DESTDEVICE) {
         LOGM(LOG, "CWLDataDeviceProtocol::setSelection: cannot send selection to a client without a data_device");
+        return;
+    }
+
+    if (DESTDEVICE->type() != DATA_SOURCE_TYPE_WAYLAND) {
+        LOGM(LOG, "CWLDataDeviceProtocol::setSelection: ignoring X11 data device");
         return;
     }
 
@@ -461,10 +529,21 @@ void CWLDataDeviceProtocol::updateSelection() {
 
 void CWLDataDeviceProtocol::onKeyboardFocus() {
     for (auto const& o : m_vOffers) {
+        if (o->source && o->source->hasDnd())
+            continue;
         o->dead = true;
     }
 
     updateSelection();
+}
+
+void CWLDataDeviceProtocol::onDndPointerFocus() {
+    for (auto const& o : m_vOffers) {
+        if (o->source && !o->source->hasDnd())
+            continue;
+        o->dead = true;
+    }
+
     updateDrag();
 }
 
@@ -515,8 +594,8 @@ void CWLDataDeviceProtocol::initiateDrag(WP<CWLDataSourceResource> currentSource
 
     dnd.mouseMove = g_pHookSystem->hookDynamic("mouseMove", [this](void* self, SCallbackInfo& info, std::any e) {
         auto V = std::any_cast<const Vector2D>(e);
-        if (dnd.focusedDevice && g_pSeatManager->state.keyboardFocus) {
-            auto surf = CWLSurface::fromResource(g_pSeatManager->state.keyboardFocus.lock());
+        if (dnd.focusedDevice && g_pSeatManager->state.dndPointerFocus) {
+            auto surf = CWLSurface::fromResource(g_pSeatManager->state.dndPointerFocus.lock());
 
             if (!surf)
                 return;
@@ -536,8 +615,8 @@ void CWLDataDeviceProtocol::initiateDrag(WP<CWLDataSourceResource> currentSource
 
     dnd.touchMove = g_pHookSystem->hookDynamic("touchMove", [this](void* self, SCallbackInfo& info, std::any e) {
         auto E = std::any_cast<ITouch::SMotionEvent>(e);
-        if (dnd.focusedDevice && g_pSeatManager->state.keyboardFocus) {
-            auto surf = CWLSurface::fromResource(g_pSeatManager->state.keyboardFocus.lock());
+        if (dnd.focusedDevice && g_pSeatManager->state.dndPointerFocus) {
+            auto surf = CWLSurface::fromResource(g_pSeatManager->state.dndPointerFocus.lock());
 
             if (!surf)
                 return;
@@ -555,7 +634,9 @@ void CWLDataDeviceProtocol::initiateDrag(WP<CWLDataSourceResource> currentSource
     // unfocus the pointer from the surface, this is part of """standard""" wayland procedure and gtk will freak out if this isn't happening.
     // BTW, the spec does NOT require this explicitly...
     // Fuck you gtk.
+    const auto LASTDNDFOCUS = g_pSeatManager->state.dndPointerFocus;
     g_pSeatManager->setPointerFocus(nullptr, {});
+    g_pSeatManager->state.dndPointerFocus = LASTDNDFOCUS;
 
     // make a new offer, etc
     updateDrag();
@@ -568,30 +649,46 @@ void CWLDataDeviceProtocol::updateDrag() {
     if (dnd.focusedDevice)
         dnd.focusedDevice->sendLeave();
 
-    if (!g_pSeatManager->state.keyboardFocusResource)
+    if (!g_pSeatManager->state.dndPointerFocus)
         return;
 
-    dnd.focusedDevice = dataDeviceForClient(g_pSeatManager->state.keyboardFocusResource->client());
+    dnd.focusedDevice = dataDeviceForClient(g_pSeatManager->state.dndPointerFocus->client());
 
     if (!dnd.focusedDevice)
         return;
 
-    // make a new offer
-    const auto OFFER = m_vOffers.emplace_back(
-        makeShared<CWLDataOfferResource>(makeShared<CWlDataOffer>(dnd.focusedDevice->resource->client(), dnd.focusedDevice->resource->version(), 0), dnd.currentSource.lock()));
+    SP<IDataOffer> offer;
 
-    if (!OFFER->good()) {
-        dnd.currentSource->resource->noMemory();
-        m_vOffers.pop_back();
+    if (const auto WL = dnd.focusedDevice->getWayland(); WL) {
+        const auto OFFER =
+            m_vOffers.emplace_back(makeShared<CWLDataOfferResource>(makeShared<CWlDataOffer>(WL->resource->client(), WL->resource->version(), 0), dnd.currentSource.lock()));
+        if (!OFFER->good()) {
+            WL->resource->noMemory();
+            m_vOffers.pop_back();
+            return;
+        }
+        OFFER->source = dnd.currentSource;
+        OFFER->self   = OFFER;
+        offer         = OFFER;
+    }
+#ifndef NO_XWAYLAND
+    else if (const auto X11 = dnd.focusedDevice->getX11(); X11)
+        offer = g_pXWayland->pWM->createX11DataOffer(g_pSeatManager->state.keyboardFocus.lock(), dnd.currentSource.lock());
+#endif
+
+    if (!offer) {
+        LOGM(ERR, "No offer could be created in updateDrag");
         return;
     }
 
-    LOGM(LOG, "New dnd offer {:x} for data source {:x}", (uintptr_t)OFFER.get(), (uintptr_t)dnd.currentSource.get());
+    LOGM(LOG, "New {} dnd offer {:x} for data source {:x}", offer->type() == DATA_SOURCE_TYPE_WAYLAND ? "wayland" : "X11", (uintptr_t)offer.get(),
+         (uintptr_t)dnd.currentSource.get());
 
-    dnd.focusedDevice->sendDataOffer(OFFER);
-    OFFER->sendData();
-    dnd.focusedDevice->sendEnter(wl_display_next_serial(g_pCompositor->m_sWLDisplay), g_pSeatManager->state.keyboardFocus.lock(),
-                                 g_pSeatManager->state.keyboardFocus->current.size / 2.F, OFFER);
+    dnd.focusedDevice->sendDataOffer(offer);
+    if (const auto WL = offer->getWayland(); WL)
+        WL->sendData();
+    dnd.focusedDevice->sendEnter(wl_display_next_serial(g_pCompositor->m_sWLDisplay), g_pSeatManager->state.dndPointerFocus.lock(),
+                                 g_pSeatManager->state.dndPointerFocus->current.size / 2.F, offer);
 }
 
 void CWLDataDeviceProtocol::resetDndState() {
@@ -637,6 +734,20 @@ bool CWLDataDeviceProtocol::wasDragSuccessful() {
         if (o->recvd || o->accepted)
             return true;
     }
+
+#ifndef NO_XWAYLAND
+    if (g_pXWayland->pWM) {
+        for (auto const& o : g_pXWayland->pWM->dndDataOffers) {
+            if (o->dead || !o->source || !o->source->hasDnd())
+                continue;
+
+            if (o->source != dnd.currentSource)
+                continue;
+
+            return true;
+        }
+    }
+#endif
 
     return false;
 }
@@ -688,14 +799,24 @@ void CWLDataDeviceProtocol::renderDND(PHLMONITOR pMonitor, timespec* when) {
     const auto POS = g_pInputManager->getMouseCoordsInternal();
 
     CBox       box = CBox{POS, dnd.dndSurface->current.size}.translate(-pMonitor->vecPosition + g_pPointerManager->cursorSizeLogical() / 2.F).scale(pMonitor->scale);
-    g_pHyprOpenGL->renderTexture(dnd.dndSurface->current.texture, &box, 1.F);
 
-    box = CBox{POS, dnd.dndSurface->current.size}.translate(g_pPointerManager->cursorSizeLogical() / 2.F);
-    g_pHyprRenderer->damageBox(&box);
+    CTexPassElement::SRenderData data;
+    data.tex = dnd.dndSurface->current.texture;
+    data.box = box;
+    g_pHyprRenderer->m_sRenderPass.add(makeShared<CTexPassElement>(data));
+
+    box = CBox{POS, dnd.dndSurface->current.size}.translate(g_pPointerManager->cursorSizeLogical() / 2.F).expand(5);
+    g_pHyprRenderer->damageBox(box);
 
     dnd.dndSurface->frame(when);
 }
 
 bool CWLDataDeviceProtocol::dndActive() {
-    return dnd.currentSource && dnd.mouseButton /* test a member of the state to ensure it's also present */;
+    return dnd.currentSource;
+}
+
+void CWLDataDeviceProtocol::abortDndIfPresent() {
+    if (!dndActive())
+        return;
+    abortDrag();
 }
