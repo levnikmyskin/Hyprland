@@ -6,7 +6,6 @@
 #include "../SharedDefs.hpp"
 #include "MiscFunctions.hpp"
 #include "WLClasses.hpp"
-#include <vector>
 #include <array>
 
 #include <xf86drmMode.h>
@@ -17,6 +16,7 @@
 #include "DamageRing.hpp"
 #include <aquamarine/output/Output.hpp>
 #include <aquamarine/allocator/Swapchain.hpp>
+#include <hyprutils/os/FileDescriptor.hpp>
 
 // Enum for the different types of auto directions, e.g. auto-left, auto-up.
 enum eAutoDirs : uint8_t {
@@ -33,7 +33,7 @@ struct SMonitorRule {
     Vector2D            resolution  = Vector2D(1280, 720);
     Vector2D            offset      = Vector2D(0, 0);
     float               scale       = 1;
-    float               refreshRate = 60;
+    float               refreshRate = 60; // Hz
     bool                disabled    = false;
     wl_output_transform transform   = WL_OUTPUT_TRANSFORM_NORMAL;
     std::string         mirrorOf    = "";
@@ -48,7 +48,7 @@ class CSyncTimeline;
 class CMonitorState {
   public:
     CMonitorState(CMonitor* owner);
-    ~CMonitorState();
+    ~CMonitorState() = default;
 
     bool commit();
     bool test();
@@ -92,7 +92,7 @@ class CMonitor {
     CDamageRing                 damage;
 
     SP<Aquamarine::IOutput>     output;
-    float                       refreshRate     = 60;
+    float                       refreshRate     = 60; // Hz
     int                         forceFullFrames = 0;
     bool                        scheduledRecalc = false;
     wl_output_transform         transform       = WL_OUTPUT_TRANSFORM_NORMAL;

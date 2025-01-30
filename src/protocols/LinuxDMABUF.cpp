@@ -14,6 +14,8 @@
 #include "../render/OpenGL.hpp"
 #include "../Compositor.hpp"
 
+using namespace Hyprutils::OS;
+
 static std::optional<dev_t> devIDFromFD(int fd) {
     struct stat stat;
     if (fstat(fd, &stat) != 0)
@@ -77,29 +79,21 @@ CDMABUFFormatTable::CDMABUFFormatTable(SDMABUFTranche _rendererTranche, std::vec
 
     tableSize = formatsVec.size() * sizeof(SDMABUFFormatTableEntry);
 
-    int fds[2] = {0};
-    allocateSHMFilePair(tableSize, &fds[0], &fds[1]);
+    CFileDescriptor fds[2];
+    allocateSHMFilePair(tableSize, fds[0], fds[1]);
 
-    auto arr = (SDMABUFFormatTableEntry*)mmap(nullptr, tableSize, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0], 0);
+    auto arr = (SDMABUFFormatTableEntry*)mmap(nullptr, tableSize, PROT_READ | PROT_WRITE, MAP_SHARED, fds[0].get(), 0);
 
     if (arr == MAP_FAILED) {
         LOGM(ERR, "mmap failed");
-        close(fds[0]);
-        close(fds[1]);
         return;
     }
-
-    close(fds[0]);
 
     std::copy(formatsVec.begin(), formatsVec.end(), arr);
 
     munmap(arr, tableSize);
 
-    tableFD = fds[1];
-}
-
-CDMABUFFormatTable::~CDMABUFFormatTable() {
-    close(tableFD);
+    tableFD = std::move(fds[1]);
 }
 
 CLinuxDMABuffer::CLinuxDMABuffer(uint32_t id, wl_client* client, Aquamarine::SDMABUFAttrs attrs) {
@@ -125,7 +119,7 @@ bool CLinuxDMABuffer::good() {
     return buffer && buffer->good();
 }
 
-CLinuxDMABBUFParamsResource::CLinuxDMABBUFParamsResource(SP<CZwpLinuxBufferParamsV1> resource_) : resource(resource_) {
+CLinuxDMABUFParamsResource::CLinuxDMABUFParamsResource(SP<CZwpLinuxBufferParamsV1> resource_) : resource(resource_) {
     if UNLIKELY (!good())
         return;
 
@@ -197,15 +191,11 @@ CLinuxDMABBUFParamsResource::CLinuxDMABBUFParamsResource(SP<CZwpLinuxBufferParam
     });
 }
 
-CLinuxDMABBUFParamsResource::~CLinuxDMABBUFParamsResource() {
-    ;
-}
-
-bool CLinuxDMABBUFParamsResource::good() {
+bool CLinuxDMABUFParamsResource::good() {
     return resource->resource();
 }
 
-void CLinuxDMABBUFParamsResource::create(uint32_t id) {
+void CLinuxDMABUFParamsResource::create(uint32_t id) {
     used = true;
 
     if UNLIKELY (!verify()) {
@@ -237,19 +227,19 @@ void CLinuxDMABBUFParamsResource::create(uint32_t id) {
     createdBuffer = buf;
 }
 
-bool CLinuxDMABBUFParamsResource::commence() {
-    if (PROTO::linuxDma->mainDeviceFD < 0)
+bool CLinuxDMABUFParamsResource::commence() {
+    if (!PROTO::linuxDma->mainDeviceFD.isValid())
         return true;
 
     for (int i = 0; i < attrs->planes; i++) {
         uint32_t handle = 0;
 
-        if (drmPrimeFDToHandle(PROTO::linuxDma->mainDeviceFD, attrs->fds.at(i), &handle)) {
+        if (drmPrimeFDToHandle(PROTO::linuxDma->mainDeviceFD.get(), attrs->fds.at(i), &handle)) {
             LOGM(ERR, "Failed to import dmabuf fd");
             return false;
         }
 
-        if (drmCloseBufferHandle(PROTO::linuxDma->mainDeviceFD, handle)) {
+        if (drmCloseBufferHandle(PROTO::linuxDma->mainDeviceFD.get(), handle)) {
             LOGM(ERR, "Failed to close dmabuf handle");
             return false;
         }
@@ -258,7 +248,7 @@ bool CLinuxDMABBUFParamsResource::commence() {
     return true;
 }
 
-bool CLinuxDMABBUFParamsResource::verify() {
+bool CLinuxDMABUFParamsResource::verify() {
     if UNLIKELY (attrs->planes <= 0) {
         resource->error(ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INCOMPLETE, "No planes added");
         return false;
@@ -307,12 +297,8 @@ CLinuxDMABUFFeedbackResource::CLinuxDMABUFFeedbackResource(SP<CZwpLinuxDmabufFee
     resource->setDestroy([this](CZwpLinuxDmabufFeedbackV1* r) { PROTO::linuxDma->destroyResource(this); });
 
     auto& formatTable = PROTO::linuxDma->formatTable;
-    resource->sendFormatTable(formatTable->tableFD, formatTable->tableSize);
+    resource->sendFormatTable(formatTable->tableFD.get(), formatTable->tableSize);
     sendDefaultFeedback();
-}
-
-CLinuxDMABUFFeedbackResource::~CLinuxDMABUFFeedbackResource() {
-    ;
 }
 
 bool CLinuxDMABUFFeedbackResource::good() {
@@ -384,7 +370,7 @@ CLinuxDMABUFResource::CLinuxDMABUFResource(SP<CZwpLinuxDmabufV1> resource_) : re
     });
 
     resource->setCreateParams([](CZwpLinuxDmabufV1* r, uint32_t id) {
-        const auto RESOURCE = PROTO::linuxDma->m_vParams.emplace_back(makeShared<CLinuxDMABBUFParamsResource>(makeShared<CZwpLinuxBufferParamsV1>(r->client(), r->version(), id)));
+        const auto RESOURCE = PROTO::linuxDma->m_vParams.emplace_back(makeShared<CLinuxDMABUFParamsResource>(makeShared<CZwpLinuxBufferParamsV1>(r->client(), r->version(), id)));
 
         if UNLIKELY (!RESOURCE->good()) {
             r->noMemory();
@@ -480,9 +466,9 @@ CLinuxDMABufV1Protocol::CLinuxDMABufV1Protocol(const wl_interface* iface, const 
 
         if (device->available_nodes & (1 << DRM_NODE_RENDER)) {
             const char* name = device->nodes[DRM_NODE_RENDER];
-            mainDeviceFD     = open(name, O_RDWR | O_CLOEXEC);
+            mainDeviceFD     = CFileDescriptor{open(name, O_RDWR | O_CLOEXEC)};
             drmFreeDevice(&device);
-            if (mainDeviceFD < 0) {
+            if (!mainDeviceFD.isValid()) {
                 LOGM(ERR, "failed to open drm dev, disabling linux dmabuf");
                 removeGlobal();
                 return;
@@ -504,7 +490,7 @@ void CLinuxDMABufV1Protocol::resetFormatTable() {
     auto newFormatTable = makeUnique<CDMABUFFormatTable>(formatTable->rendererTranche, formatTable->monitorTranches);
 
     for (auto const& feedback : m_vFeedbacks) {
-        feedback->resource->sendFormatTable(newFormatTable->tableFD, newFormatTable->tableSize);
+        feedback->resource->sendFormatTable(newFormatTable->tableFD.get(), newFormatTable->tableSize);
         if (feedback->lastFeedbackWasScanout) {
             PHLMONITOR mon;
             auto       HLSurface = CWLSurface::fromResource(feedback->surface);
@@ -527,11 +513,6 @@ void CLinuxDMABufV1Protocol::resetFormatTable() {
     formatTable = std::move(newFormatTable);
 }
 
-CLinuxDMABufV1Protocol::~CLinuxDMABufV1Protocol() {
-    if (mainDeviceFD >= 0)
-        close(mainDeviceFD);
-}
-
 void CLinuxDMABufV1Protocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
     const auto RESOURCE = m_vManagers.emplace_back(makeShared<CLinuxDMABUFResource>(makeShared<CZwpLinuxDmabufV1>(client, ver, id)));
 
@@ -550,7 +531,7 @@ void CLinuxDMABufV1Protocol::destroyResource(CLinuxDMABUFFeedbackResource* resou
     std::erase_if(m_vFeedbacks, [&](const auto& other) { return other.get() == resource; });
 }
 
-void CLinuxDMABufV1Protocol::destroyResource(CLinuxDMABBUFParamsResource* resource) {
+void CLinuxDMABufV1Protocol::destroyResource(CLinuxDMABUFParamsResource* resource) {
     std::erase_if(m_vParams, [&](const auto& other) { return other.get() == resource; });
 }
 

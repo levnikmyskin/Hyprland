@@ -31,10 +31,6 @@ CSubsurface::CSubsurface(SP<CWLSubsurfaceResource> pSubsurface, WP<CPopup> pOwne
     initExistingSubsurfaces(pSubsurface->surface.lock());
 }
 
-CSubsurface::~CSubsurface() {
-    ;
-}
-
 void CSubsurface::initSignals() {
     if (m_pSubsurface) {
         listeners.commitSubsurface  = m_pSubsurface->surface->events.commit.registerListener([this](std::any d) { onCommit(); });
@@ -143,7 +139,7 @@ void CSubsurface::onNewSubsurface(SP<CWLSubsurfaceResource> pSubsurface) {
 
     ASSERT(PSUBSURFACE);
 
-    PSUBSURFACE->m_pParent = PSUBSURFACE;
+    PSUBSURFACE->m_pParent = m_pSelf;
 }
 
 void CSubsurface::onMap() {

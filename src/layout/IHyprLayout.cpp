@@ -307,7 +307,7 @@ void IHyprLayout::onBeginDragWindow() {
     }
 
     if (g_pInputManager->dragMode != MBIND_RESIZE && g_pInputManager->dragMode != MBIND_RESIZE_FORCE_RATIO && g_pInputManager->dragMode != MBIND_RESIZE_BLOCK_RATIO)
-        g_pInputManager->setCursorImageUntilUnset("grab");
+        g_pInputManager->setCursorImageUntilUnset("grabbing");
 
     g_pHyprRenderer->damageWindow(DRAGGINGWINDOW);
 
@@ -950,5 +950,3 @@ Vector2D IHyprLayout::predictSizeForNewWindow(PHLWINDOW pWindow) {
 
     return sizePredicted;
 }
-
-IHyprLayout::~IHyprLayout() = default;

@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <gbm.h>
 #include <filesystem>
+using namespace Hyprutils::OS;
 
 const std::vector<const char*> ASSET_PATHS = {
 #ifdef DATAROOTDIR
@@ -301,11 +302,11 @@ CHyprOpenGLImpl::CHyprOpenGLImpl() : m_iDRMFD(g_pCompositor->m_iDRMFD) {
         Debug::log(WARN, "EGL: EXT_platform_device or EGL_EXT_device_query not supported, using gbm");
         if (EGLEXTENSIONS.contains("KHR_platform_gbm")) {
             success  = true;
-            m_iGBMFD = openRenderNode(m_iDRMFD);
-            if (m_iGBMFD < 0)
+            m_iGBMFD = CFileDescriptor{openRenderNode(m_iDRMFD)};
+            if (!m_iGBMFD.isValid())
                 RASSERT(false, "Couldn't open a gbm fd");
 
-            m_pGbmDevice = gbm_create_device(m_iGBMFD);
+            m_pGbmDevice = gbm_create_device(m_iGBMFD.get());
             if (!m_pGbmDevice)
                 RASSERT(false, "Couldn't open a gbm device");
 
@@ -371,9 +372,6 @@ CHyprOpenGLImpl::~CHyprOpenGLImpl() {
 
     if (m_pGbmDevice)
         gbm_device_destroy(m_pGbmDevice);
-
-    if (m_iGBMFD >= 0)
-        close(m_iGBMFD);
 }
 
 std::optional<std::vector<uint64_t>> CHyprOpenGLImpl::getModsForFormat(EGLint format) {
@@ -2147,14 +2145,20 @@ void CHyprOpenGLImpl::renderTextureWithBlur(SP<CTexture> tex, const CBox& box, f
     glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
 
     // stencil done. Render everything.
-    CBox MONITORBOX = {0, 0, m_RenderData.pMonitor->vecTransformedSize.x, m_RenderData.pMonitor->vecTransformedSize.y};
-    // render our great blurred FB
-    // calculate the uv for it
     const auto LASTTL = m_RenderData.primarySurfaceUVTopLeft;
     const auto LASTBR = m_RenderData.primarySurfaceUVBottomRight;
 
-    m_RenderData.primarySurfaceUVTopLeft     = box.pos() / MONITORBOX.size();
-    m_RenderData.primarySurfaceUVBottomRight = (box.pos() + box.size()) / MONITORBOX.size();
+    CBox       transformedBox = box;
+    transformedBox.transform(wlTransformToHyprutils(invertTransform(m_RenderData.pMonitor->transform)), m_RenderData.pMonitor->vecTransformedSize.x,
+                             m_RenderData.pMonitor->vecTransformedSize.y);
+
+    CBox monitorSpaceBox = {transformedBox.pos().x / m_RenderData.pMonitor->vecPixelSize.x * m_RenderData.pMonitor->vecTransformedSize.x,
+                            transformedBox.pos().y / m_RenderData.pMonitor->vecPixelSize.y * m_RenderData.pMonitor->vecTransformedSize.y,
+                            transformedBox.width / m_RenderData.pMonitor->vecPixelSize.x * m_RenderData.pMonitor->vecTransformedSize.x,
+                            transformedBox.height / m_RenderData.pMonitor->vecPixelSize.y * m_RenderData.pMonitor->vecTransformedSize.y};
+
+    m_RenderData.primarySurfaceUVTopLeft     = monitorSpaceBox.pos() / m_RenderData.pMonitor->vecTransformedSize;
+    m_RenderData.primarySurfaceUVBottomRight = (monitorSpaceBox.pos() + monitorSpaceBox.size()) / m_RenderData.pMonitor->vecTransformedSize;
 
     static auto PBLURIGNOREOPACITY = CConfigValue<Hyprlang::INT>("decoration:blur:ignore_opacity");
     setMonitorTransformEnabled(true);
@@ -2948,29 +2952,28 @@ std::vector<SDRMFormat> CHyprOpenGLImpl::getDRMFormats() {
     return drmFormats;
 }
 
-SP<CEGLSync> CHyprOpenGLImpl::createEGLSync(int fenceFD) {
+SP<CEGLSync> CHyprOpenGLImpl::createEGLSync(CFileDescriptor fenceFD) {
     std::vector<EGLint> attribs;
-    int                 dupFd = -1;
-    if (fenceFD > 0) {
-        dupFd = fcntl(fenceFD, F_DUPFD_CLOEXEC, 0);
-        if (dupFd < 0) {
+    CFileDescriptor     dupFd;
+    if (fenceFD.isValid()) {
+        dupFd = fenceFD.duplicate();
+        if (!dupFd.isValid()) {
             Debug::log(ERR, "createEGLSync: dup failed");
             return nullptr;
         }
         // reserve number of elements to avoid reallocations
         attribs.reserve(3);
         attribs.push_back(EGL_SYNC_NATIVE_FENCE_FD_ANDROID);
-        attribs.push_back(dupFd);
+        attribs.push_back(dupFd.get());
         attribs.push_back(EGL_NONE);
     }
 
     EGLSyncKHR sync = m_sProc.eglCreateSyncKHR(m_pEglDisplay, EGL_SYNC_NATIVE_FENCE_ANDROID, attribs.data());
     if (sync == EGL_NO_SYNC_KHR) {
         Debug::log(ERR, "eglCreateSyncKHR failed");
-        if (dupFd >= 0)
-            close(dupFd);
         return nullptr;
-    }
+    } else
+        dupFd.take(); // eglCreateSyncKHR only takes ownership on success
 
     // we need to flush otherwise we might not get a valid fd
     glFlush();
@@ -2983,19 +2986,18 @@ SP<CEGLSync> CHyprOpenGLImpl::createEGLSync(int fenceFD) {
 
     auto eglsync   = SP<CEGLSync>(new CEGLSync);
     eglsync->sync  = sync;
-    eglsync->m_iFd = fd;
+    eglsync->m_iFd = CFileDescriptor{fd};
     return eglsync;
 }
 
 bool CHyprOpenGLImpl::waitForTimelinePoint(SP<CSyncTimeline> timeline, uint64_t point) {
-    int fd = timeline->exportAsSyncFileFD(point);
-    if (fd < 0) {
+    auto fd = timeline->exportAsSyncFileFD(point);
+    if (!fd.isValid()) {
         Debug::log(ERR, "waitForTimelinePoint: failed to get a fd from explicit timeline");
         return false;
     }
 
-    auto sync = g_pHyprOpenGL->createEGLSync(fd);
-    close(fd);
+    auto sync = g_pHyprOpenGL->createEGLSync(std::move(fd));
     if (!sync) {
         Debug::log(ERR, "waitForTimelinePoint: failed to get an eglsync from explicit timeline");
         return false;
@@ -3076,12 +3078,9 @@ CEGLSync::~CEGLSync() {
 
     if (g_pHyprOpenGL->m_sProc.eglDestroySyncKHR(g_pHyprOpenGL->m_pEglDisplay, sync) != EGL_TRUE)
         Debug::log(ERR, "eglDestroySyncKHR failed");
-
-    if (m_iFd >= 0)
-        close(m_iFd);
 }
 
-int CEGLSync::fd() {
+CFileDescriptor& CEGLSync::fd() {
     return m_iFd;
 }
 
