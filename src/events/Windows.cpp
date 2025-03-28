@@ -11,11 +11,11 @@
 #include "../protocols/XDGShell.hpp"
 #include "../protocols/core/Compositor.hpp"
 #include "../protocols/ToplevelExport.hpp"
+#include "../protocols/types/ContentType.hpp"
 #include "../xwayland/XSurface.hpp"
 #include "managers/AnimationManager.hpp"
 #include "managers/PointerManager.hpp"
 #include "../desktop/LayerSurface.hpp"
-#include "../managers/input/InputManager.hpp"
 #include "../managers/LayoutManager.hpp"
 #include "../managers/EventManager.hpp"
 #include "../managers/AnimationManager.hpp"
@@ -307,6 +307,13 @@ void Events::listener_mapWindow(void* owner, void* data) {
                 }
                 break;
             }
+            case CWindowRule::RULE_CONTENT: {
+                const CVarList VARS(r->szRule, 0, ' ');
+                try {
+                    PWINDOW->setContentType(NContentType::fromString(VARS[1]));
+                } catch (std::exception& e) { Debug::log(ERR, "Rule \"{}\" failed with: {}", r->szRule, e.what()); }
+                break;
+            }
             default: break;
         }
 
@@ -342,7 +349,7 @@ void Events::listener_mapWindow(void* owner, void* data) {
             if (!workspaceSilent) {
                 if (pWorkspace->m_bIsSpecialWorkspace)
                     pWorkspace->m_pMonitor->setSpecialWorkspace(pWorkspace);
-                else if (PMONITOR->activeWorkspaceID() != REQUESTEDWORKSPACEID)
+                else if (PMONITOR->activeWorkspaceID() != REQUESTEDWORKSPACEID && !PWINDOW->m_bNoInitialFocus)
                     g_pKeybindManager->m_mDispatchers["workspace"](requestedWorkspaceName);
 
                 PMONITOR = g_pCompositor->m_pLastMonitor.lock();
@@ -385,6 +392,8 @@ void Events::listener_mapWindow(void* owner, void* data) {
     // Verify window swallowing. Get the swallower before calling onWindowCreated(PWINDOW) because getSwallower() wouldn't get it after if PWINDOW gets auto grouped.
     const auto SWALLOWER  = PWINDOW->getSwallower();
     PWINDOW->m_pSwallowed = SWALLOWER;
+    if (PWINDOW->m_pSwallowed)
+        PWINDOW->m_pSwallowed->m_bCurrentlySwallowed = true;
 
     if (PWINDOW->m_bIsFloating) {
         g_pLayoutManager->getCurrentLayout()->onWindowCreated(PWINDOW);
@@ -679,13 +688,6 @@ void Events::listener_mapWindow(void* owner, void* data) {
 
     if (PMONITOR && PWINDOW->isX11OverrideRedirect())
         PWINDOW->m_fX11SurfaceScaledBy = PMONITOR->scale;
-
-    // Fix some X11 popups being invisible / having incorrect size on open.
-    // What the ACTUAL FUCK is going on?????? I HATE X11
-    if (!PWINDOW->isX11OverrideRedirect() && PWINDOW->m_bIsX11 && PWINDOW->m_bIsFloating) {
-        PWINDOW->sendWindowSize(PWINDOW->m_vRealSize->goal(), true, PWINDOW->m_vRealPosition->goal() - Vector2D{1, 1});
-        PWINDOW->sendWindowSize(PWINDOW->m_vRealSize->goal(), true);
-    }
 }
 
 void Events::listener_unmapWindow(void* owner, void* data) {
@@ -714,6 +716,13 @@ void Events::listener_unmapWindow(void* owner, void* data) {
     g_pEventManager->postEvent(SHyprIPCEvent{"closewindow", std::format("{:x}", PWINDOW)});
     EMIT_HOOK_EVENT("closeWindow", PWINDOW);
 
+    if (PWINDOW->m_bIsFloating && !PWINDOW->m_bIsX11 &&
+        std::any_of(PWINDOW->m_vMatchedRules.begin(), PWINDOW->m_vMatchedRules.end(), [](const auto& r) { return r->ruleType == CWindowRule::RULE_PERSISTENTSIZE; })) {
+        Debug::log(LOG, "storing floating size {}x{} for window {}::{} on close", PWINDOW->m_vRealSize->value().x, PWINDOW->m_vRealSize->value().y, PWINDOW->m_szClass,
+                   PWINDOW->m_szTitle);
+        g_pConfigManager->storeFloatingSize(PWINDOW, PWINDOW->m_vRealSize->value());
+    }
+
     PROTO::toplevelExport->onWindowUnmap(PWINDOW);
 
     if (PWINDOW->isFullscreen())
@@ -724,12 +733,15 @@ void Events::listener_unmapWindow(void* owner, void* data) {
 
     // swallowing
     if (valid(PWINDOW->m_pSwallowed)) {
-        PWINDOW->m_pSwallowed->setHidden(false);
+        if (PWINDOW->m_pSwallowed->m_bCurrentlySwallowed) {
+            PWINDOW->m_pSwallowed->m_bCurrentlySwallowed = false;
+            PWINDOW->m_pSwallowed->setHidden(false);
 
-        if (PWINDOW->m_sGroupData.pNextWindow.lock())
-            PWINDOW->m_pSwallowed->m_bGroupSwallowed = true; // flag for the swallowed window to be created into the group where it belongs when auto_group = false.
+            if (PWINDOW->m_sGroupData.pNextWindow.lock())
+                PWINDOW->m_pSwallowed->m_bGroupSwallowed = true; // flag for the swallowed window to be created into the group where it belongs when auto_group = false.
 
-        g_pLayoutManager->getCurrentLayout()->onWindowCreated(PWINDOW->m_pSwallowed.lock());
+            g_pLayoutManager->getCurrentLayout()->onWindowCreated(PWINDOW->m_pSwallowed.lock());
+        }
 
         PWINDOW->m_pSwallowed->m_bGroupSwallowed = false;
         PWINDOW->m_pSwallowed.reset();
@@ -868,7 +880,7 @@ void Events::listener_commitWindow(void* owner, void* data) {
 
     // tearing: if solitary, redraw it. This still might be a single surface window
     if (PMONITOR && PMONITOR->solitaryClient.lock() == PWINDOW && PWINDOW->canBeTorn() && PMONITOR->tearingState.canTear && PWINDOW->m_pWLSurface->resource()->current.texture) {
-        CRegion damageBox{PWINDOW->m_pWLSurface->resource()->accumulateCurrentBufferDamage()};
+        CRegion damageBox{PWINDOW->m_pWLSurface->resource()->current.accumulateBufferDamage()};
 
         if (!damageBox.empty()) {
             if (PMONITOR->tearingState.busy) {
@@ -952,7 +964,7 @@ void Events::listener_unmanagedSetGeometry(void* owner, void* data) {
         PWINDOW->setHidden(true);
 
     if (PWINDOW->isFullscreen() || !PWINDOW->m_bIsFloating) {
-        PWINDOW->sendWindowSize(PWINDOW->m_vRealSize->goal(), true);
+        PWINDOW->sendWindowSize(true);
         g_pHyprRenderer->damageWindow(PWINDOW);
         return;
     }

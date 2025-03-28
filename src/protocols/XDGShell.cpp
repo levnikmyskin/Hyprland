@@ -3,6 +3,7 @@
 #include <algorithm>
 #include "../Compositor.hpp"
 #include "../managers/SeatManager.hpp"
+#include "../managers/ANRManager.hpp"
 #include "../helpers/Monitor.hpp"
 #include "core/Seat.hpp"
 #include "core/Compositor.hpp"
@@ -318,8 +319,11 @@ uint32_t CXDGToplevelResource::setSuspeneded(bool sus) {
 void CXDGToplevelResource::applyState() {
     wl_array arr;
     wl_array_init(&arr);
-    wl_array_add(&arr, pendingApply.states.size() * sizeof(int));
-    memcpy(arr.data, pendingApply.states.data(), pendingApply.states.size() * sizeof(int));
+
+    if (!pendingApply.states.empty()) {
+        wl_array_add(&arr, pendingApply.states.size() * sizeof(int));
+        memcpy(arr.data, pendingApply.states.data(), pendingApply.states.size() * sizeof(int));
+    }
 
     resource->sendConfigure(pendingApply.size.x, pendingApply.size.y, &arr);
 
@@ -386,7 +390,7 @@ CXDGSurfaceResource::CXDGSurfaceResource(SP<CXdgSurface> resource_, SP<CXDGWMBas
         if (toplevel)
             toplevel->current = toplevel->pending;
 
-        if UNLIKELY (initialCommit && surface->pending.texture) {
+        if UNLIKELY (initialCommit && surface->pending.buffer) {
             resource->error(-1, "Buffer attached before initial commit");
             return;
         }
@@ -740,6 +744,11 @@ CXDGWMBase::CXDGWMBase(SP<CXdgWmBase> resource_) : resource(resource_) {
 
         LOGM(LOG, "New xdg_surface at {:x}", (uintptr_t)RESOURCE.get());
     });
+
+    resource->setPong([this](CXdgWmBase* r, uint32_t serial) {
+        g_pANRManager->onResponse(self.lock());
+        events.pong.emit();
+    });
 }
 
 bool CXDGWMBase::good() {
@@ -748,6 +757,10 @@ bool CXDGWMBase::good() {
 
 wl_client* CXDGWMBase::client() {
     return pClient;
+}
+
+void CXDGWMBase::ping() {
+    resource->sendPing(1337);
 }
 
 CXDGShellProtocol::CXDGShellProtocol(const wl_interface* iface, const int& ver, const std::string& name) : IWaylandProtocol(iface, ver, name) {

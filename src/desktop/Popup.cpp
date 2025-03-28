@@ -12,23 +12,37 @@
 #include "../render/OpenGL.hpp"
 #include <ranges>
 
-CPopup::CPopup(PHLWINDOW pOwner) : m_pWindowOwner(pOwner) {
-    initAllSignals();
+UP<CPopup> CPopup::create(PHLWINDOW pOwner) {
+    auto popup            = UP<CPopup>(new CPopup());
+    popup->m_pWindowOwner = pOwner;
+    popup->m_pSelf        = popup;
+    popup->initAllSignals();
+    return popup;
 }
 
-CPopup::CPopup(PHLLS pOwner) : m_pLayerOwner(pOwner) {
-    initAllSignals();
+UP<CPopup> CPopup::create(PHLLS pOwner) {
+    auto popup           = UP<CPopup>(new CPopup());
+    popup->m_pLayerOwner = pOwner;
+    popup->m_pSelf       = popup;
+    popup->initAllSignals();
+    return popup;
 }
 
-CPopup::CPopup(SP<CXDGPopupResource> popup, WP<CPopup> pOwner) :
-    m_pWindowOwner(pOwner->m_pWindowOwner), m_pLayerOwner(pOwner->m_pLayerOwner), m_pParent(pOwner), m_pResource(popup) {
-    m_pWLSurface = CWLSurface::create();
-    m_pWLSurface->assign(popup->surface->surface.lock(), this);
+UP<CPopup> CPopup::create(SP<CXDGPopupResource> resource, WP<CPopup> pOwner) {
+    auto popup            = UP<CPopup>(new CPopup());
+    popup->m_pResource    = resource;
+    popup->m_pWindowOwner = pOwner->m_pWindowOwner;
+    popup->m_pLayerOwner  = pOwner->m_pLayerOwner;
+    popup->m_pParent      = pOwner;
+    popup->m_pSelf        = popup;
+    popup->m_pWLSurface   = CWLSurface::create();
+    popup->m_pWLSurface->assign(resource->surface->surface.lock(), popup.get());
 
-    m_vLastSize = popup->surface->current.geometry.size();
-    reposition();
+    popup->m_vLastSize = resource->surface->current.geometry.size();
+    popup->reposition();
 
-    initAllSignals();
+    popup->initAllSignals();
+    return popup;
 }
 
 CPopup::~CPopup() {
@@ -59,7 +73,7 @@ void CPopup::initAllSignals() {
 }
 
 void CPopup::onNewPopup(SP<CXDGPopupResource> popup) {
-    const auto& POPUP = m_vChildren.emplace_back(makeShared<CPopup>(popup, m_pSelf));
+    const auto& POPUP = m_vChildren.emplace_back(CPopup::create(popup, m_pSelf));
     POPUP->m_pSelf    = POPUP;
     Debug::log(LOG, "New popup at {:x}", (uintptr_t)POPUP);
 }
@@ -91,8 +105,7 @@ void CPopup::onMap() {
 
     g_pInputManager->simulateMouseMovement();
 
-    m_pSubsurfaceHead          = makeUnique<CSubsurface>(m_pSelf);
-    m_pSubsurfaceHead->m_pSelf = m_pSubsurfaceHead;
+    m_pSubsurfaceHead = CSubsurface::create(m_pSelf);
 
     //unconstrain();
     sendScale();
@@ -269,7 +282,11 @@ void CPopup::recheckTree() {
 }
 
 void CPopup::recheckChildrenRecursive() {
-    auto cpy = m_vChildren;
+    if (m_bInert || !m_pWLSurface)
+        return;
+
+    std::vector<WP<CPopup>> cpy;
+    std::ranges::for_each(m_vChildren, [&cpy](const auto& el) { cpy.emplace_back(el); });
     for (auto const& c : cpy) {
         c->onCommit(true);
         c->recheckChildrenRecursive();
@@ -326,27 +343,34 @@ void CPopup::breadthfirst(std::function<void(WP<CPopup>, void*)> fn, void* data)
 
 WP<CPopup> CPopup::at(const Vector2D& globalCoords, bool allowsInput) {
     std::vector<WP<CPopup>> popups;
-    breadthfirst([](WP<CPopup> popup, void* data) { ((std::vector<WP<CPopup>>*)data)->push_back(popup); }, &popups);
+    breadthfirst([&popups](WP<CPopup> popup, void* data) { popups.push_back(popup); }, &popups);
 
     for (auto const& p : popups | std::views::reverse) {
         if (!p->m_pResource || !p->m_bMapped)
             continue;
 
         if (!allowsInput) {
-            const Vector2D offset = p->m_pResource ? (p->size() - p->m_pResource->geometry.size()) / 2.F : Vector2D{};
-            const Vector2D size   = p->m_pResource ? p->m_pResource->geometry.size() : p->size();
+            const bool HASSURFACE = p->m_pResource && p->m_pResource->surface;
 
-            const auto     BOX = CBox{p->coordsGlobal() + offset, size};
+            Vector2D   offset = HASSURFACE ? p->m_pResource->surface->current.geometry.pos() : Vector2D{};
+            Vector2D   size   = HASSURFACE ? p->m_pResource->surface->current.geometry.size() : p->size();
+
+            if (size == Vector2D{})
+                size = p->size();
+
+            const auto BOX = CBox{p->coordsGlobal() + offset, size};
             if (BOX.containsPoint(globalCoords))
                 return p;
         } else {
-            const Vector2D offset = p->m_pResource ? (p->size() - p->m_pResource->geometry.size()) / 2.F : Vector2D{};
-            const auto     REGION =
-                CRegion{p->m_pWLSurface->resource()->current.input}.intersect(CBox{{}, p->m_pWLSurface->resource()->current.size}).translate(p->coordsGlobal() + offset);
+            const auto REGION = CRegion{p->m_pWLSurface->resource()->current.input}.intersect(CBox{{}, p->m_pWLSurface->resource()->current.size}).translate(p->coordsGlobal());
             if (REGION.containsPoint(globalCoords))
                 return p;
         }
     }
 
     return {};
+}
+
+bool CPopup::inert() const {
+    return m_bInert;
 }

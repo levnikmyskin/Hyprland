@@ -13,13 +13,16 @@ void CTexPassElement::draw(const CRegion& damage) {
 
     CScopeGuard x = {[]() {
         //
-        g_pHyprOpenGL->m_bEndFrame = false;
+        g_pHyprOpenGL->m_bEndFrame          = false;
+        g_pHyprOpenGL->m_RenderData.clipBox = {};
     }};
+
+    if (!data.clipBox.empty())
+        g_pHyprOpenGL->m_RenderData.clipBox = data.clipBox;
 
     if (data.replaceProjection)
         g_pHyprOpenGL->m_RenderData.monitorProjection = *data.replaceProjection;
-    g_pHyprOpenGL->renderTextureInternalWithDamage(data.tex, data.box, data.a, data.damage.empty() ? damage : data.damage, data.round, data.roundingPower, data.syncTimeline,
-                                                   data.syncPoint);
+    g_pHyprOpenGL->renderTextureInternalWithDamage(data.tex, data.box, data.a, data.damage.empty() ? damage : data.damage, data.round, data.roundingPower);
     if (data.replaceProjection)
         g_pHyprOpenGL->m_RenderData.monitorProjection = g_pHyprOpenGL->m_RenderData.pMonitor->projMatrix;
 }

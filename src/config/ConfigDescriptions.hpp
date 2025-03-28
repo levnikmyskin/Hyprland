@@ -247,104 +247,110 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .type        = CONFIG_OPTION_STRING_LONG,
         .data        = SConfigOptionDescription::SStringData{""}, //##TODO UNSET?
     },
+    SConfigOptionDescription{
+        .value       = "decoration:border_part_of_window",
+        .description = "whether the border should be treated as a part of the window.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
 
     /*
      * blur:
      */
 
     SConfigOptionDescription{
-        .value       = "blur:enabled",
+        .value       = "decoration:blur:enabled",
         .description = "enable kawase window background blur",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
     },
     SConfigOptionDescription{
-        .value       = "blur:size",
+        .value       = "decoration:blur:size",
         .description = "blur size (distance)",
         .type        = CONFIG_OPTION_INT,
         .data        = SConfigOptionDescription::SRangeData{8, 0, 100},
     },
     SConfigOptionDescription{
-        .value       = "blur:passes",
+        .value       = "decoration:blur:passes",
         .description = "the amount of passes to perform",
         .type        = CONFIG_OPTION_INT,
         .data        = SConfigOptionDescription::SRangeData{1, 0, 10},
     },
     SConfigOptionDescription{
-        .value       = "blur:ignore_opacity",
+        .value       = "decoration:blur:ignore_opacity",
         .description = "make the blur layer ignore the opacity of the window",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
     },
     SConfigOptionDescription{
-        .value       = "blur:new_optimizations",
+        .value       = "decoration:blur:new_optimizations",
         .description = "whether to enable further optimizations to the blur. Recommended to leave on, as it will massively improve performance.",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
     },
     SConfigOptionDescription{
-        .value       = "blur:xray",
+        .value       = "decoration:blur:xray",
         .description = "if enabled, floating windows will ignore tiled windows in their blur. Only available if blur_new_optimizations is true. Will reduce overhead on floating "
                        "blur significantly.",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
     SConfigOptionDescription{
-        .value       = "blur:noise",
+        .value       = "decoration:blur:noise",
         .description = "how much noise to apply. [0.0 - 1.0]",
         .type        = CONFIG_OPTION_FLOAT,
         .data        = SConfigOptionDescription::SFloatData{0.0117, 0, 1},
     },
     SConfigOptionDescription{
-        .value       = "blur:contrast",
+        .value       = "decoration:blur:contrast",
         .description = "contrast modulation for blur. [0.0 - 2.0]",
         .type        = CONFIG_OPTION_FLOAT,
         .data        = SConfigOptionDescription::SFloatData{0.8916, 0, 2},
     },
     SConfigOptionDescription{
-        .value       = "blur:brightness",
+        .value       = "decoration:blur:brightness",
         .description = "brightness modulation for blur. [0.0 - 2.0]",
         .type        = CONFIG_OPTION_FLOAT,
         .data        = SConfigOptionDescription::SFloatData{0.8172, 0, 2},
     },
     SConfigOptionDescription{
-        .value       = "blur:vibrancy",
+        .value       = "decoration:blur:vibrancy",
         .description = "Increase saturation of blurred colors. [0.0 - 1.0]",
         .type        = CONFIG_OPTION_FLOAT,
         .data        = SConfigOptionDescription::SFloatData{0.1696, 0, 1},
     },
     SConfigOptionDescription{
-        .value       = "blur:vibrancy_darkness",
+        .value       = "decoration:blur:vibrancy_darkness",
         .description = "How strong the effect of vibrancy is on dark areas . [0.0 - 1.0]",
         .type        = CONFIG_OPTION_FLOAT,
         .data        = SConfigOptionDescription::SFloatData{0, 0, 1},
     },
     SConfigOptionDescription{
-        .value       = "blur:special",
+        .value       = "decoration:blur:special",
         .description = "whether to blur behind the special workspace (note: expensive)",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
     SConfigOptionDescription{
-        .value       = "blur:popups",
+        .value       = "decoration:blur:popups",
         .description = "whether to blur popups (e.g. right-click menus)",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
     SConfigOptionDescription{
-        .value       = "blur:popups_ignorealpha",
+        .value       = "decoration:blur:popups_ignorealpha",
         .description = "works like ignorealpha in layer rules. If pixel opacity is below set value, will not blur. [0.0 - 1.0]",
         .type        = CONFIG_OPTION_FLOAT,
         .data        = SConfigOptionDescription::SFloatData{0.2, 0, 1},
     },
     SConfigOptionDescription{
-        .value       = "blur:input_methods",
+        .value       = "decoration:blur:input_methods",
         .description = "whether to blur input methods (e.g. fcitx5)",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
     SConfigOptionDescription{
-        .value       = "blur:input_methods_ignorealpha",
+        .value       = "decoration:blur:input_methods_ignorealpha",
         .description = "works like ignorealpha in layer rules. If pixel opacity is below set value, will not blur. [0.0 - 1.0]",
         .type        = CONFIG_OPTION_FLOAT,
         .data        = SConfigOptionDescription::SFloatData{0.2, 0, 1},
@@ -502,6 +508,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .data        = SConfigOptionDescription::SRangeData{1, 0, 3},
     },
     SConfigOptionDescription{
+        .value       = "input:follow_mouse_threshold",
+        .description = "The smallest distance in logical pixels the mouse needs to travel for the window under it to get focused. Works only with follow_mouse = 1.",
+        .type        = CONFIG_OPTION_FLOAT,
+        .data        = SConfigOptionDescription::SFloatData{},
+    },
+    SConfigOptionDescription{
         .value       = "input:focus_on_close",
         .description = "Controls the window focus behavior when a window is closed. When set to 0, focus will shift to the next window candidate. When set to 1, focus will shift "
                        "to the window under the cursor.",
@@ -599,6 +611,18 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
     SConfigOptionDescription{
         .value       = "input:touchpad:tap-and-drag",
         .description = "Sets the tap and drag mode for the touchpad",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "input:touchpad:flip_x",
+        .description = "Inverts the horizontal movement of the touchpad",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "input:touchpad:flip_y",
+        .description = "Inverts the vertical movement of the touchpad",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
@@ -809,25 +833,25 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .data        = SConfigOptionDescription::SBoolData{true},
     },
     SConfigOptionDescription{
-        .value       = "general:col.border_active",
+        .value       = "group:col.border_active",
         .description = "border color for inactive windows",
         .type        = CONFIG_OPTION_GRADIENT,
         .data        = SConfigOptionDescription::SGradientData{"0x66ffff00"},
     },
     SConfigOptionDescription{
-        .value       = "general:col.border_inactive",
+        .value       = "group:col.border_inactive",
         .description = "border color for the active window",
         .type        = CONFIG_OPTION_GRADIENT,
         .data        = SConfigOptionDescription::SGradientData{"0x66777700"},
     },
     SConfigOptionDescription{
-        .value       = "general:col.border_locked_active",
+        .value       = "group:col.border_locked_inactive",
         .description = "inactive border color for window that cannot be added to a group (see denywindowfromgroup dispatcher)",
         .type        = CONFIG_OPTION_GRADIENT,
         .data        = SConfigOptionDescription::SGradientData{"0x66ff5500"},
     },
     SConfigOptionDescription{
-        .value       = "general:col.border_locked_inactive",
+        .value       = "group:col.border_locked_active",
         .description = "active border color for window that cannot be added to a group",
         .type        = CONFIG_OPTION_GRADIENT,
         .data        = SConfigOptionDescription::SGradientData{"0x66775500"},
@@ -883,13 +907,19 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .value       = "group:groupbar:gradients",
         .description = "enables gradients",
         .type        = CONFIG_OPTION_BOOL,
-        .data        = SConfigOptionDescription::SBoolData{true},
+        .data        = SConfigOptionDescription::SBoolData{false},
     },
     SConfigOptionDescription{
         .value       = "group:groupbar:height",
         .description = "height of the groupbar",
         .type        = CONFIG_OPTION_INT,
         .data        = SConfigOptionDescription::SRangeData{14, 1, 64},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:indicator_height",
+        .description = "height of the groupbar indicator",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{3, 1, 64},
     },
     SConfigOptionDescription{
         .value       = "group:groupbar:stacked",
@@ -912,6 +942,30 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
     SConfigOptionDescription{
         .value       = "group:groupbar:scrolling",
         .description = "whether scrolling in the groupbar changes group active window",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:rounding",
+        .description = "how much to round the groupbar",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{1, 0, 20},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:gradient_rounding",
+        .description = "how much to round the groupbar gradient",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{1, 0, 20},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:round_only_edges",
+        .description = "if yes, will only round at the groupbar edges",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:gradient_round_only_edges",
+        .description = "if yes, will only round at the groupbar gradient edges",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
     },
@@ -944,6 +998,18 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .description = "controls the group bar text color",
         .type        = CONFIG_OPTION_COLOR,
         .data        = SConfigOptionDescription::SColorData{0x66775500},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:gaps_out",
+        .description = "gap between gradients and window",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{2, 0, 20},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:gaps_in",
+        .description = "gap between gradients",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{2, 0, 20},
     },
 
     /*
@@ -994,9 +1060,9 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
     },
     SConfigOptionDescription{
         .value       = "misc:vrr",
-        .description = "	controls the VRR (Adaptive Sync) of your monitors. 0 - off, 1 - on, 2 - fullscreen only [0/1/2]",
+        .description = "	controls the VRR (Adaptive Sync) of your monitors. 0 - off, 1 - on, 2 - fullscreen only, 3 - fullscreen with game or video content type [0/1/2/3]",
         .type        = CONFIG_OPTION_INT,
-        .data        = SConfigOptionDescription::SRangeData{0, 0, 2},
+        .data        = SConfigOptionDescription::SRangeData{.value = 0, .min = 0, .max = 3},
     },
     SConfigOptionDescription{
         .value       = "misc:mouse_move_enables_dpms",
@@ -1151,6 +1217,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .type        = CONFIG_OPTION_INT,
         .data        = SConfigOptionDescription::SRangeData{1000, 0, 5000},
     },
+    SConfigOptionDescription{
+        .value       = "misc:enable_anr_dialog",
+        .description = "whether to enable the ANR (app not responding) dialog when your apps hang",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
 
     /*
      * binds:
@@ -1204,7 +1276,7 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .value       = "binds:movefocus_cycles_fullscreen",
         .description = "If enabled, when on a fullscreen window, movefocus will cycle fullscreen, if not, it will move the focus in a direction.",
         .type        = CONFIG_OPTION_BOOL,
-        .data        = SConfigOptionDescription::SBoolData{true},
+        .data        = SConfigOptionDescription::SBoolData{false},
     },
     SConfigOptionDescription{
         .value       = "binds:movefocus_cycles_groupfirst",
@@ -1253,6 +1325,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
+    SConfigOptionDescription{
+        .value       = "xwayland:create_abstract_socket",
+        .description = "Create the abstract Unix domain socket for XWayland",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
 
     /*
      * opengl:
@@ -1263,13 +1341,6 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .description = "reduces flickering on nvidia at the cost of possible frame drops on lower-end GPUs. On non-nvidia, this is ignored.",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
-    },
-    SConfigOptionDescription{
-        .value       = "opengl:force_introspection",
-        .description = "forces introspection at all times. Introspection is aimed at reducing GPU usage in certain cases, but might cause graphical glitches on nvidia. 0 - "
-                       "nothing, 1 - force always on, 2 - force always on if nvidia",
-        .type        = CONFIG_OPTION_INT,
-        .data        = SConfigOptionDescription::SRangeData{2, 0, 2},
     },
 
     /*
@@ -1291,9 +1362,9 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
     SConfigOptionDescription{
         .value       = "render:direct_scanout",
         .description = "Enables direct scanout. Direct scanout attempts to reduce lag when there is only one fullscreen application on a screen (e.g. game). It is also "
-                       "recommended to set this to false if the fullscreen application shows graphical glitches.",
-        .type        = CONFIG_OPTION_BOOL,
-        .data        = SConfigOptionDescription::SBoolData{false},
+                       "recommended to set this to false if the fullscreen application shows graphical glitches. 0 - off, 1 - on, 2 - auto (on with content type 'game')",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{.value = 0, .min = 0, .max = 2},
     },
     SConfigOptionDescription{
         .value       = "render:expand_undersized_textures",
@@ -1314,8 +1385,14 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .data        = SConfigOptionDescription::SRangeData{2, 0, 2},
     },
     SConfigOptionDescription{
-        .value       = "render:allow_early_buffer_release",
-        .description = "Allow early buffer release event. Fixes stuttering and missing frames for some apps. May cause graphical glitches and memory leaks in others",
+        .value       = "render:cm_fs_passthrough",
+        .description = "Passthrough color settings for fullscreen apps when possible",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{.value = 2, .min = 0, .max = 2},
+    },
+    SConfigOptionDescription{
+        .value       = "render:cm_enabled",
+        .description = "Enable Color Management pipelines (requires restart to fully take effect)",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
     },
@@ -1325,23 +1402,17 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
      */
 
     SConfigOptionDescription{
-        .value       = "cursor:use_nearest_neighbor",
-        .description = "sync xcursor theme with gsettings, it applies cursor-theme and cursor-size on theme load to gsettings making most CSD gtk based clients use same xcursor "
-                       "theme and size.",
-        .type        = CONFIG_OPTION_BOOL,
-        .data        = SConfigOptionDescription::SBoolData{true},
-    },
-    SConfigOptionDescription{
         .value       = "cursor:no_hardware_cursors",
-        .description = "disables hardware cursors",
+        .description = "disables hardware cursors. Auto = disable when tearing",
         .type        = CONFIG_OPTION_CHOICE,
         .data        = SConfigOptionDescription::SChoiceData{0, "Disabled,Enabled,Auto"},
     },
     SConfigOptionDescription{
         .value       = "cursor:no_break_fs_vrr",
-        .description = "disables scheduling new frames on cursor movement for fullscreen apps with VRR enabled to avoid framerate spikes (requires no_hardware_cursors = true)",
-        .type        = CONFIG_OPTION_BOOL,
-        .data        = SConfigOptionDescription::SBoolData{false},
+        .description = "disables scheduling new frames on cursor movement for fullscreen apps with VRR enabled to avoid framerate spikes (may require no_hardware_cursors = true) "
+                       "0 - off, 1 - on, 2 - auto (on with content type 'game')",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{.value = 2, .min = 0, .max = 2},
     },
     SConfigOptionDescription{
         .value       = "cursor:min_refresh_rate",
@@ -1418,6 +1489,35 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
     SConfigOptionDescription{
         .value       = "cursor:use_cpu_buffer",
         .description = "Makes HW cursors use a CPU buffer. Required on Nvidia to have HW cursors. Experimental",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "cursor:sync_gsettings_theme",
+        .description = "sync xcursor theme with gsettings, it applies cursor-theme and cursor-size on theme load to gsettings making most CSD gtk based clients use same xcursor "
+                       "theme and size.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "cursor:warp_back_after_non_mouse_input",
+        .description = "warp the cursor back to where it was after using a non-mouse input to move it, and then returning back to mouse.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+
+    /*
+     * ecosystem:
+     */
+    SConfigOptionDescription{
+        .value       = "ecosystem:no_update_news",
+        .description = "disable the popup that shows up when you update hyprland to a new version.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "ecosystem:no_donation_nag",
+        .description = "disable the popup that shows up twice a year encouraging to donate.",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
@@ -1503,6 +1603,24 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .description = "enables colors in the stdout logs.",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "debug:log_damage",
+        .description = "enables logging the damage.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "debug:pass",
+        .description = "enables render pass debugging.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "debug:full_cm_proto",
+        .description = "claims support for all cm proto features (requires restart)",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
     },
 
     /*
@@ -1665,20 +1783,14 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .data        = SConfigOptionDescription::SBoolData{true},
     },
     SConfigOptionDescription{
-        .value       = "experimental:wide_color_gamut",
-        .description = "force wide color gamut for all supported outputs",
-        .type        = CONFIG_OPTION_BOOL,
-        .data        = SConfigOptionDescription::SBoolData{false},
-    },
-    SConfigOptionDescription{
-        .value       = "experimental:hdr",
-        .description = "force static hdr for all supported outputs",
-        .type        = CONFIG_OPTION_BOOL,
-        .data        = SConfigOptionDescription::SBoolData{false},
-    },
-    SConfigOptionDescription{
         .value       = "experimental:xx_color_management_v4",
         .description = "enable color management protocol",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "master:always_keep_position",
+        .description = "whether to keep the master window in its configured position when there are no slave windows",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },

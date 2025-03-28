@@ -10,11 +10,11 @@ class CXDGPopupResource;
 class CPopup {
   public:
     // dummy head nodes
-    CPopup(PHLWINDOW pOwner);
-    CPopup(PHLLS pOwner);
+    static UP<CPopup> create(PHLWINDOW pOwner);
+    static UP<CPopup> create(PHLLS pOwner);
 
     // real nodes
-    CPopup(SP<CXDGPopupResource> popup, WP<CPopup> pOwner);
+    static UP<CPopup> create(SP<CXDGPopupResource> popup, WP<CPopup> pOwner);
 
     ~CPopup();
 
@@ -34,6 +34,7 @@ class CPopup {
     void           recheckTree();
 
     bool           visible();
+    bool           inert() const;
 
     // will also loop over this node
     void       breadthfirst(std::function<void(WP<CPopup>, void*)> fn, void* data);
@@ -45,6 +46,8 @@ class CPopup {
     bool           m_bMapped = false;
 
   private:
+    CPopup() = default;
+
     // T1 owners, each popup has to have one of these
     PHLWINDOWREF m_pWindowOwner;
     PHLLSREF     m_pLayerOwner;
@@ -62,7 +65,7 @@ class CPopup {
     bool                  m_bInert = false;
 
     //
-    std::vector<SP<CPopup>> m_vChildren;
+    std::vector<UP<CPopup>> m_vChildren;
     UP<CSubsurface>         m_pSubsurfaceHead;
 
     struct {

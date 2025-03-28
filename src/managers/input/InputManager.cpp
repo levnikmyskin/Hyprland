@@ -90,14 +90,30 @@ CInputManager::~CInputManager() {
 void CInputManager::onMouseMoved(IPointer::SMotionEvent e) {
     static auto PNOACCEL = CConfigValue<Hyprlang::INT>("input:force_no_accel");
 
-    const auto  DELTA = *PNOACCEL == 1 ? e.unaccel : e.delta;
+    Vector2D    delta   = e.delta;
+    Vector2D    unaccel = e.unaccel;
+
+    if (e.device) {
+        if (e.device->isTouchpad) {
+            if (e.device->flipX) {
+                delta.x   = -delta.x;
+                unaccel.x = -unaccel.x;
+            }
+            if (e.device->flipY) {
+                delta.y   = -delta.y;
+                unaccel.y = -unaccel.y;
+            }
+        }
+    }
+
+    const auto DELTA = *PNOACCEL == 1 ? unaccel : delta;
 
     if (g_pSeatManager->isPointerFrameSkipped)
-        g_pPointerManager->storeMovement((uint64_t)e.timeMs, DELTA, e.unaccel);
+        g_pPointerManager->storeMovement((uint64_t)e.timeMs, DELTA, unaccel);
     else
-        g_pPointerManager->setStoredMovement((uint64_t)e.timeMs, DELTA, e.unaccel);
+        g_pPointerManager->setStoredMovement((uint64_t)e.timeMs, DELTA, unaccel);
 
-    PROTO::relativePointer->sendRelativeMotion((uint64_t)e.timeMs * 1000, DELTA, e.unaccel);
+    PROTO::relativePointer->sendRelativeMotion((uint64_t)e.timeMs * 1000, DELTA, unaccel);
 
     if (e.mouse)
         recheckMouseWarpOnMouseInput();
@@ -161,16 +177,22 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse) {
     if (MOUSECOORDSFLOORED == m_vLastCursorPosFloored && !refocus)
         return;
 
-    static auto PFOLLOWMOUSE      = CConfigValue<Hyprlang::INT>("input:follow_mouse");
-    static auto PMOUSEREFOCUS     = CConfigValue<Hyprlang::INT>("input:mouse_refocus");
-    static auto PFOLLOWONDND      = CConfigValue<Hyprlang::INT>("misc:always_follow_on_dnd");
-    static auto PFLOATBEHAVIOR    = CConfigValue<Hyprlang::INT>("input:float_switch_override_focus");
-    static auto PMOUSEFOCUSMON    = CConfigValue<Hyprlang::INT>("misc:mouse_move_focuses_monitor");
-    static auto PRESIZEONBORDER   = CConfigValue<Hyprlang::INT>("general:resize_on_border");
-    static auto PRESIZECURSORICON = CConfigValue<Hyprlang::INT>("general:hover_icon_on_border");
-    static auto PZOOMFACTOR       = CConfigValue<Hyprlang::FLOAT>("cursor:zoom_factor");
+    static auto PFOLLOWMOUSE          = CConfigValue<Hyprlang::INT>("input:follow_mouse");
+    static auto PFOLLOWMOUSETHRESHOLD = CConfigValue<Hyprlang::FLOAT>("input:follow_mouse_threshold");
+    static auto PMOUSEREFOCUS         = CConfigValue<Hyprlang::INT>("input:mouse_refocus");
+    static auto PFOLLOWONDND          = CConfigValue<Hyprlang::INT>("misc:always_follow_on_dnd");
+    static auto PFLOATBEHAVIOR        = CConfigValue<Hyprlang::INT>("input:float_switch_override_focus");
+    static auto PMOUSEFOCUSMON        = CConfigValue<Hyprlang::INT>("misc:mouse_move_focuses_monitor");
+    static auto PRESIZEONBORDER       = CConfigValue<Hyprlang::INT>("general:resize_on_border");
+    static auto PRESIZECURSORICON     = CConfigValue<Hyprlang::INT>("general:hover_icon_on_border");
+    static auto PZOOMFACTOR           = CConfigValue<Hyprlang::FLOAT>("cursor:zoom_factor");
 
     const auto  FOLLOWMOUSE = *PFOLLOWONDND && PROTO::data->dndActive() ? 1 : *PFOLLOWMOUSE;
+
+    if (FOLLOWMOUSE == 1 && m_tmrLastCursorMovement.getSeconds() < 0.5)
+        m_fMousePosDelta += MOUSECOORDSFLOORED.distance(m_vLastCursorPosFloored);
+    else
+        m_fMousePosDelta = 0;
 
     m_pFoundSurfaceToFocus.reset();
     m_pFoundLSToFocus.reset();
@@ -271,9 +293,10 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse) {
                 const auto BOX = HLSurface->getSurfaceBoxGlobal();
 
                 if (BOX) {
+                    const auto PWINDOW = HLSurface->getWindow();
                     surfacePos         = BOX->pos();
                     pFoundLayerSurface = HLSurface->getLayer();
-                    pFoundWindow       = HLSurface->getWindow();
+                    pFoundWindow       = !PWINDOW || PWINDOW->isHidden() ? g_pCompositor->m_pLastWindow.lock() : PWINDOW;
                 } else // reset foundSurface, find one normally
                     foundSurface = nullptr;
             } else // reset foundSurface, find one normally
@@ -513,9 +536,10 @@ void CInputManager::mouseMoveUnified(uint32_t time, bool refocus, bool mouse) {
 
                     // TODO: this looks wrong. When over a popup, it constantly is switching.
                     // Temp fix until that's figured out. Otherwise spams windowrule lookups and other shit.
-                    if (m_pLastMouseFocus.lock() != pFoundWindow || g_pCompositor->m_pLastWindow.lock() != pFoundWindow)
-                        g_pCompositor->focusWindow(pFoundWindow, foundSurface);
-                    else
+                    if (m_pLastMouseFocus.lock() != pFoundWindow || g_pCompositor->m_pLastWindow.lock() != pFoundWindow) {
+                        if (m_fMousePosDelta > *PFOLLOWMOUSETHRESHOLD || refocus)
+                            g_pCompositor->focusWindow(pFoundWindow, foundSurface);
+                    } else
                         g_pCompositor->focusSurface(foundSurface, pFoundWindow);
                 }
             }
@@ -1173,6 +1197,9 @@ void CInputManager::setPointerConfigs() {
             const auto LIBINPUTSENS = std::clamp(g_pConfigManager->getDeviceFloat(devname, "sensitivity", "input:sensitivity"), -1.f, 1.f);
             libinput_device_config_accel_set_speed(LIBINPUTDEV, LIBINPUTSENS);
 
+            m->flipX = g_pConfigManager->getDeviceInt(devname, "flip_x", "input:touchpad:flip_x") != 0;
+            m->flipY = g_pConfigManager->getDeviceInt(devname, "flip_y", "input:touchpad:flip_y") != 0;
+
             const auto ACCELPROFILE = g_pConfigManager->getDeviceString(devname, "accel_profile", "input:accel_profile");
             const auto SCROLLPOINTS = g_pConfigManager->getDeviceString(devname, "scroll_points", "input:scroll_points");
 
@@ -1552,10 +1579,13 @@ void CInputManager::setTouchDeviceConfigs(SP<ITouch> dev) {
             if (libinput_device_config_send_events_get_mode(LIBINPUTDEV) != mode)
                 libinput_device_config_send_events_set_mode(LIBINPUTDEV, mode);
 
-            const int ROTATION = std::clamp(g_pConfigManager->getDeviceInt(PTOUCHDEV->hlName, "transform", "input:touchdevice:transform"), 0, 7);
-            Debug::log(LOG, "Setting calibration matrix for device {}", PTOUCHDEV->hlName);
-            if (libinput_device_config_calibration_has_matrix(LIBINPUTDEV))
-                libinput_device_config_calibration_set_matrix(LIBINPUTDEV, MATRICES[ROTATION]);
+            if (libinput_device_config_calibration_has_matrix(LIBINPUTDEV)) {
+                Debug::log(LOG, "Setting calibration matrix for device {}", PTOUCHDEV->hlName);
+                // default value of transform being -1 means it's unset.
+                const int ROTATION = std::clamp(g_pConfigManager->getDeviceInt(PTOUCHDEV->hlName, "transform", "input:touchdevice:transform"), -1, 7);
+                if (ROTATION > -1)
+                    libinput_device_config_calibration_set_matrix(LIBINPUTDEV, MATRICES[ROTATION]);
+            }
 
             auto       output     = g_pConfigManager->getDeviceString(PTOUCHDEV->hlName, "output", "input:touchdevice:output");
             bool       bound      = !output.empty() && output != STRVAL_EMPTY;
@@ -1597,9 +1627,10 @@ void CInputManager::setTabletConfigs() {
             const auto RELINPUT = g_pConfigManager->getDeviceInt(NAME, "relative_input", "input:tablet:relative_input");
             t->relativeInput    = RELINPUT;
 
-            const int ROTATION = std::clamp(g_pConfigManager->getDeviceInt(NAME, "transform", "input:tablet:transform"), 0, 7);
+            const int ROTATION = std::clamp(g_pConfigManager->getDeviceInt(NAME, "transform", "input:tablet:transform"), -1, 7);
             Debug::log(LOG, "Setting calibration matrix for device {}", NAME);
-            libinput_device_config_calibration_set_matrix(LIBINPUTDEV, MATRICES[ROTATION]);
+            if (ROTATION > -1)
+                libinput_device_config_calibration_set_matrix(LIBINPUTDEV, MATRICES[ROTATION]);
 
             if (g_pConfigManager->getDeviceInt(NAME, "left_handed", "input:tablet:left_handed") == 0)
                 libinput_device_config_left_handed_set(LIBINPUTDEV, 0);
@@ -1700,8 +1731,11 @@ void CInputManager::releaseAllMouseButtons() {
     if (PROTO::data->dndActive())
         return;
 
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+
     for (auto const& mb : buttonsCopy) {
-        g_pSeatManager->sendPointerButton(0, mb, WL_POINTER_BUTTON_STATE_RELEASED);
+        g_pSeatManager->sendPointerButton(now.tv_sec * 1000 + now.tv_nsec / 1000000, mb, WL_POINTER_BUTTON_STATE_RELEASED);
     }
 
     m_lCurrentlyHeldButtons.clear();

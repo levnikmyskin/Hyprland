@@ -138,6 +138,27 @@ struct SFirstExecRequest {
     bool        withRules = false;
 };
 
+struct SFloatCache {
+    size_t hash;
+
+    SFloatCache(PHLWINDOW window) {
+        hash = std::hash<std::string>{}(window->m_szClass) ^ (std::hash<std::string>{}(window->m_szTitle) << 1);
+    }
+
+    bool operator==(const SFloatCache& other) const {
+        return hash == other.hash;
+    }
+};
+
+namespace std {
+    template <>
+    struct hash<SFloatCache> {
+        size_t operator()(const SFloatCache& id) const {
+            return id.hash;
+        }
+    };
+}
+
 class CConfigManager {
   public:
     CConfigManager();
@@ -189,7 +210,7 @@ class CConfigManager {
     void                                               ensureMonitorStatus();
     void                                               ensureVRR(PHLMONITOR pMonitor = nullptr);
 
-    bool                                               shouldUseSoftwareCursors();
+    bool                                               shouldUseSoftwareCursors(PHLMONITOR pMonitor);
     void                                               updateWatcher();
 
     std::string                                        parseKeyword(const std::string&, const std::string&);
@@ -204,66 +225,35 @@ class CConfigManager {
     std::string                                        getErrors();
 
     // keywords
-    std::optional<std::string>                                                                     handleRawExec(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleExec(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleExecOnce(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleExecRawOnce(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleExecShutdown(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleMonitor(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleBind(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleUnbind(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleWindowRule(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleLayerRule(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleWindowRuleV2(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleWorkspaceRules(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleBezier(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleAnimation(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleSource(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleSubmap(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleBlurLS(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleBindWS(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handleEnv(const std::string&, const std::string&);
-    std::optional<std::string>                                                                     handlePlugin(const std::string&, const std::string&);
+    std::optional<std::string> handleRawExec(const std::string&, const std::string&);
+    std::optional<std::string> handleExec(const std::string&, const std::string&);
+    std::optional<std::string> handleExecOnce(const std::string&, const std::string&);
+    std::optional<std::string> handleExecRawOnce(const std::string&, const std::string&);
+    std::optional<std::string> handleExecShutdown(const std::string&, const std::string&);
+    std::optional<std::string> handleMonitor(const std::string&, const std::string&);
+    std::optional<std::string> handleBind(const std::string&, const std::string&);
+    std::optional<std::string> handleUnbind(const std::string&, const std::string&);
+    std::optional<std::string> handleWindowRule(const std::string&, const std::string&);
+    std::optional<std::string> handleLayerRule(const std::string&, const std::string&);
+    std::optional<std::string> handleWorkspaceRules(const std::string&, const std::string&);
+    std::optional<std::string> handleBezier(const std::string&, const std::string&);
+    std::optional<std::string> handleAnimation(const std::string&, const std::string&);
+    std::optional<std::string> handleSource(const std::string&, const std::string&);
+    std::optional<std::string> handleSubmap(const std::string&, const std::string&);
+    std::optional<std::string> handleBlurLS(const std::string&, const std::string&);
+    std::optional<std::string> handleBindWS(const std::string&, const std::string&);
+    std::optional<std::string> handleEnv(const std::string&, const std::string&);
+    std::optional<std::string> handlePlugin(const std::string&, const std::string&);
 
-    std::string                                                                                    configCurrentPath;
+    std::string                configCurrentPath;
 
-    std::unordered_map<std::string, std::function<CWindowOverridableVar<bool>*(const PHLWINDOW&)>> mbWindowProperties = {
-        {"allowsinput", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.allowsInput; }},
-        {"dimaround", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.dimAround; }},
-        {"decorate", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.decorate; }},
-        {"focusonactivate", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.focusOnActivate; }},
-        {"keepaspectratio", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.keepAspectRatio; }},
-        {"nearestneighbor", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.nearestNeighbor; }},
-        {"noanim", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noAnim; }},
-        {"noblur", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noBlur; }},
-        {"noborder", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noBorder; }},
-        {"nodim", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noDim; }},
-        {"nofocus", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noFocus; }},
-        {"nomaxsize", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noMaxSize; }},
-        {"norounding", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noRounding; }},
-        {"noshadow", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noShadow; }},
-        {"noshortcutsinhibit", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noShortcutsInhibit; }},
-        {"opaque", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.opaque; }},
-        {"forcergbx", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.RGBX; }},
-        {"syncfullscreen", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.syncFullscreen; }},
-        {"immediate", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.tearing; }},
-        {"xray", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.xray; }},
-    };
+    bool                       m_bWantsMonitorReload                  = false;
+    bool                       m_bNoMonitorReload                     = false;
+    bool                       isLaunchingExecOnce                    = false; // For exec-once to skip initial ws tracking
+    bool                       m_bLastConfigVerificationWasSuccessful = true;
 
-    std::unordered_map<std::string, std::function<CWindowOverridableVar<int>*(const PHLWINDOW&)>> miWindowProperties = {
-        {"rounding", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.rounding; }},
-        {"bordersize", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.borderSize; }},
-    };
-
-    std::unordered_map<std::string, std::function<CWindowOverridableVar<float>*(PHLWINDOW)>> mfWindowProperties = {
-        {"roundingpower", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.roundingPower; }},
-        {"scrollmouse", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.scrollMouse; }},
-        {"scrolltouchpad", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.scrollTouchpad; }}};
-
-    bool m_bWantsMonitorReload                  = false;
-    bool m_bNoMonitorReload                     = false;
-    bool isLaunchingExecOnce                    = false; // For exec-once to skip initial ws tracking
-    bool m_bLastConfigVerificationWasSuccessful = true;
+    void                       storeFloatingSize(PHLWINDOW window, const Vector2D& size);
+    std::optional<Vector2D>    getStoredFloatingSize(PHLWINDOW window);
 
   private:
     UP<Hyprlang::CConfig>                            m_pConfig;
@@ -297,14 +287,26 @@ class CConfigManager {
     std::vector<std::pair<std::string, std::string>> m_vFailedPluginConfigValues; // for plugin values of unloaded plugins
     std::string                                      m_szConfigErrors = "";
 
+    uint32_t                                         m_configValueNumber = 0;
+
     // internal methods
-    void                       updateBlurredLS(const std::string&, const bool);
-    void                       setDefaultAnimationVars();
-    std::optional<std::string> resetHLConfig();
-    std::optional<std::string> generateConfig(std::string configPath);
-    std::optional<std::string> verifyConfigExists();
-    void                       postConfigReload(const Hyprlang::CParseResult& result);
-    SWorkspaceRule             mergeWorkspaceRules(const SWorkspaceRule&, const SWorkspaceRule&);
+    void                                      updateBlurredLS(const std::string&, const bool);
+    void                                      setDefaultAnimationVars();
+    std::optional<std::string>                resetHLConfig();
+    std::optional<std::string>                generateConfig(std::string configPath);
+    std::optional<std::string>                verifyConfigExists();
+    void                                      postConfigReload(const Hyprlang::CParseResult& result);
+    SWorkspaceRule                            mergeWorkspaceRules(const SWorkspaceRule&, const SWorkspaceRule&);
+
+    void                                      registerConfigVar(const char* name, const Hyprlang::INT& val);
+    void                                      registerConfigVar(const char* name, const Hyprlang::FLOAT& val);
+    void                                      registerConfigVar(const char* name, const Hyprlang::VEC2& val);
+    void                                      registerConfigVar(const char* name, const Hyprlang::STRING& val);
+    void                                      registerConfigVar(const char* name, Hyprlang::CUSTOMTYPE&& val);
+
+    std::unordered_map<SFloatCache, Vector2D> m_mStoredFloatingSizes;
+
+    friend struct SConfigOptionDescription;
 };
 
 inline UP<CConfigManager> g_pConfigManager;

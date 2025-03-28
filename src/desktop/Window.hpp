@@ -19,6 +19,7 @@
 #include "WLSurface.hpp"
 #include "Workspace.hpp"
 #include "WindowRule.hpp"
+#include "../protocols/types/ContentType.hpp"
 
 class CXDGSurfaceResource;
 class CXWaylandSurface;
@@ -197,6 +198,8 @@ struct SWindowData {
 
     CWindowOverridableVar<CGradientValueData> activeBorderColor;
     CWindowOverridableVar<CGradientValueData> inactiveBorderColor;
+
+    CWindowOverridableVar<bool>               persistentSize;
 };
 
 struct SInitialWorkspaceToken {
@@ -354,7 +357,8 @@ class CWindow {
 
     // swallowing
     PHLWINDOWREF m_pSwallowed;
-    bool         m_bGroupSwallowed = false;
+    bool         m_bCurrentlySwallowed = false;
+    bool         m_bGroupSwallowed     = false;
 
     // focus stuff
     bool m_bStayFocused = false;
@@ -386,6 +390,9 @@ class CWindow {
     // window tags
     CTagKeeper m_tags;
 
+    // ANR
+    PHLANIMVAR<float> m_notRespondingTint;
+
     // For the list lookup
     bool operator==(const CWindow& rhs) const {
         return m_pXDGSurface == rhs.m_pXDGSurface && m_pXWaylandSurface == rhs.m_pXWaylandSurface && m_vPosition == rhs.m_vPosition && m_vSize == rhs.m_vSize &&
@@ -393,85 +400,94 @@ class CWindow {
     }
 
     // methods
-    CBox                   getFullWindowBoundingBox();
-    SBoxExtents            getFullWindowExtents();
-    CBox                   getWindowBoxUnified(uint64_t props);
-    CBox                   getWindowIdealBoundingBoxIgnoreReserved();
-    void                   addWindowDeco(UP<IHyprWindowDecoration> deco);
-    void                   updateWindowDecos();
-    void                   removeWindowDeco(IHyprWindowDecoration* deco);
-    void                   uncacheWindowDecos();
-    bool                   checkInputOnDecos(const eInputType, const Vector2D&, std::any = {});
-    pid_t                  getPID();
-    IHyprWindowDecoration* getDecorationByType(eDecorationType);
-    void                   updateToplevel();
-    void                   updateSurfaceScaleTransformDetails(bool force = false);
-    void                   moveToWorkspace(PHLWORKSPACE);
-    PHLWINDOW              x11TransientFor();
-    void                   onUnmap();
-    void                   onMap();
-    void                   setHidden(bool hidden);
-    bool                   isHidden();
-    void                   applyDynamicRule(const SP<CWindowRule>& r);
-    void                   updateDynamicRules();
-    SBoxExtents            getFullWindowReservedArea();
-    Vector2D               middle();
-    bool                   opaque();
-    float                  rounding();
-    float                  roundingPower();
-    bool                   canBeTorn();
-    void                   setSuspended(bool suspend);
-    bool                   visibleOnMonitor(PHLMONITOR pMonitor);
-    WORKSPACEID            workspaceID();
-    MONITORID              monitorID();
-    bool                   onSpecialWorkspace();
-    void                   activate(bool force = false);
-    int                    surfacesCount();
-    void                   clampWindowSize(const std::optional<Vector2D> minSize, const std::optional<Vector2D> maxSize);
-    bool                   isFullscreen();
-    bool                   isEffectiveInternalFSMode(const eFullscreenMode);
-    int                    getRealBorderSize();
-    float                  getScrollMouse();
-    float                  getScrollTouchpad();
-    void                   updateWindowData();
-    void                   updateWindowData(const struct SWorkspaceRule&);
-    void                   onBorderAngleAnimEnd(WP<Hyprutils::Animation::CBaseAnimatedVariable> pav);
-    bool                   isInCurvedCorner(double x, double y);
-    bool                   hasPopupAt(const Vector2D& pos);
-    int                    popupsCount();
-    void                   applyGroupRules();
-    void                   createGroup();
-    void                   destroyGroup();
-    PHLWINDOW              getGroupHead();
-    PHLWINDOW              getGroupTail();
-    PHLWINDOW              getGroupCurrent();
-    PHLWINDOW              getGroupPrevious();
-    PHLWINDOW              getGroupWindowByIndex(int);
-    int                    getGroupSize();
-    bool                   canBeGroupedInto(PHLWINDOW pWindow);
-    void                   setGroupCurrent(PHLWINDOW pWindow);
-    void                   insertWindowToGroup(PHLWINDOW pWindow);
-    void                   updateGroupOutputs();
-    void                   switchWithWindowInGroup(PHLWINDOW pWindow);
-    void                   setAnimationsToMove();
-    void                   onWorkspaceAnimUpdate();
-    void                   onFocusAnimUpdate();
-    void                   onUpdateState();
-    void                   onUpdateMeta();
-    void                   onX11Configure(CBox box);
-    void                   onResourceChangeX11();
-    std::string            fetchTitle();
-    std::string            fetchClass();
-    void                   warpCursor(bool force = false);
-    PHLWINDOW              getSwallower();
-    void                   unsetWindowData(eOverridePriority priority);
-    bool                   isX11OverrideRedirect();
-    bool                   isModal();
-    Vector2D               requestedMinSize();
-    Vector2D               requestedMaxSize();
-    void                   sendWindowSize(Vector2D size, bool force = false, std::optional<Vector2D> overridePos = std::nullopt);
+    CBox                       getFullWindowBoundingBox();
+    SBoxExtents                getFullWindowExtents();
+    CBox                       getWindowBoxUnified(uint64_t props);
+    CBox                       getWindowIdealBoundingBoxIgnoreReserved();
+    void                       addWindowDeco(UP<IHyprWindowDecoration> deco);
+    void                       updateWindowDecos();
+    void                       removeWindowDeco(IHyprWindowDecoration* deco);
+    void                       uncacheWindowDecos();
+    bool                       checkInputOnDecos(const eInputType, const Vector2D&, std::any = {});
+    pid_t                      getPID();
+    IHyprWindowDecoration*     getDecorationByType(eDecorationType);
+    void                       updateToplevel();
+    void                       updateSurfaceScaleTransformDetails(bool force = false);
+    void                       moveToWorkspace(PHLWORKSPACE);
+    PHLWINDOW                  x11TransientFor();
+    void                       onUnmap();
+    void                       onMap();
+    void                       setHidden(bool hidden);
+    bool                       isHidden();
+    void                       applyDynamicRule(const SP<CWindowRule>& r);
+    void                       updateDynamicRules();
+    SBoxExtents                getFullWindowReservedArea();
+    Vector2D                   middle();
+    bool                       opaque();
+    float                      rounding();
+    float                      roundingPower();
+    bool                       canBeTorn();
+    void                       setSuspended(bool suspend);
+    bool                       visibleOnMonitor(PHLMONITOR pMonitor);
+    WORKSPACEID                workspaceID();
+    MONITORID                  monitorID();
+    bool                       onSpecialWorkspace();
+    void                       activate(bool force = false);
+    int                        surfacesCount();
+    void                       clampWindowSize(const std::optional<Vector2D> minSize, const std::optional<Vector2D> maxSize);
+    bool                       isFullscreen();
+    bool                       isEffectiveInternalFSMode(const eFullscreenMode);
+    int                        getRealBorderSize();
+    float                      getScrollMouse();
+    float                      getScrollTouchpad();
+    void                       updateWindowData();
+    void                       updateWindowData(const struct SWorkspaceRule&);
+    void                       onBorderAngleAnimEnd(WP<Hyprutils::Animation::CBaseAnimatedVariable> pav);
+    bool                       isInCurvedCorner(double x, double y);
+    bool                       hasPopupAt(const Vector2D& pos);
+    int                        popupsCount();
+    void                       applyGroupRules();
+    void                       createGroup();
+    void                       destroyGroup();
+    PHLWINDOW                  getGroupHead();
+    PHLWINDOW                  getGroupTail();
+    PHLWINDOW                  getGroupCurrent();
+    PHLWINDOW                  getGroupPrevious();
+    PHLWINDOW                  getGroupWindowByIndex(int);
+    int                        getGroupSize();
+    bool                       canBeGroupedInto(PHLWINDOW pWindow);
+    void                       setGroupCurrent(PHLWINDOW pWindow);
+    void                       insertWindowToGroup(PHLWINDOW pWindow);
+    void                       updateGroupOutputs();
+    void                       switchWithWindowInGroup(PHLWINDOW pWindow);
+    void                       setAnimationsToMove();
+    void                       onWorkspaceAnimUpdate();
+    void                       onFocusAnimUpdate();
+    void                       onUpdateState();
+    void                       onUpdateMeta();
+    void                       onX11ConfigureRequest(CBox box);
+    void                       onResourceChangeX11();
+    std::string                fetchTitle();
+    std::string                fetchClass();
+    void                       warpCursor(bool force = false);
+    PHLWINDOW                  getSwallower();
+    void                       unsetWindowData(eOverridePriority priority);
+    bool                       isX11OverrideRedirect();
+    bool                       isModal();
+    Vector2D                   requestedMinSize();
+    Vector2D                   requestedMaxSize();
+    Vector2D                   realToReportSize();
+    Vector2D                   realToReportPosition();
+    Vector2D                   xwaylandSizeToReal(Vector2D size);
+    Vector2D                   xwaylandPositionToReal(Vector2D size);
+    void                       updateX11SurfaceScale();
+    void                       sendWindowSize(bool force = false);
+    NContentType::eContentType getContentType();
+    void                       setContentType(NContentType::eContentType contentType);
+    void                       deactivateGroupMembers();
+    bool                       isNotResponding();
 
-    CBox                   getWindowMainSurfaceBox() const {
+    CBox                       getWindowMainSurfaceBox() const {
         return {m_vRealPosition->value().x, m_vRealPosition->value().y, m_vRealSize->value().x, m_vRealSize->value().y};
     }
 
@@ -492,7 +508,7 @@ class CWindow {
         CHyprSignalListener commit;
         CHyprSignalListener destroy;
         CHyprSignalListener activate;
-        CHyprSignalListener configure;
+        CHyprSignalListener configureRequest;
         CHyprSignalListener setGeometry;
         CHyprSignalListener updateState;
         CHyprSignalListener updateMetadata;
@@ -525,6 +541,42 @@ inline bool validMapped(PHLWINDOWREF w) {
         return false;
     return w->m_bIsMapped;
 }
+
+namespace NWindowProperties {
+    static const std::unordered_map<std::string, std::function<CWindowOverridableVar<bool>*(const PHLWINDOW&)>> boolWindowProperties = {
+        {"allowsinput", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.allowsInput; }},
+        {"dimaround", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.dimAround; }},
+        {"decorate", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.decorate; }},
+        {"focusonactivate", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.focusOnActivate; }},
+        {"keepaspectratio", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.keepAspectRatio; }},
+        {"nearestneighbor", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.nearestNeighbor; }},
+        {"noanim", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noAnim; }},
+        {"noblur", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noBlur; }},
+        {"noborder", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noBorder; }},
+        {"nodim", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noDim; }},
+        {"nofocus", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noFocus; }},
+        {"nomaxsize", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noMaxSize; }},
+        {"norounding", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noRounding; }},
+        {"noshadow", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noShadow; }},
+        {"noshortcutsinhibit", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.noShortcutsInhibit; }},
+        {"opaque", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.opaque; }},
+        {"forcergbx", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.RGBX; }},
+        {"syncfullscreen", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.syncFullscreen; }},
+        {"immediate", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.tearing; }},
+        {"xray", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.xray; }},
+    };
+
+    const std::unordered_map<std::string, std::function<CWindowOverridableVar<int>*(const PHLWINDOW&)>> intWindowProperties = {
+        {"rounding", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.rounding; }},
+        {"bordersize", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.borderSize; }},
+    };
+
+    const std::unordered_map<std::string, std::function<CWindowOverridableVar<float>*(PHLWINDOW)>> floatWindowProperties = {
+        {"roundingpower", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.roundingPower; }},
+        {"scrollmouse", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.scrollMouse; }},
+        {"scrolltouchpad", [](const PHLWINDOW& pWindow) { return &pWindow->m_sWindowData.scrollTouchpad; }},
+    };
+};
 
 /**
     format specification

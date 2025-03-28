@@ -374,8 +374,22 @@ void CHyprMasterLayout::calculateWorkspace(PHLWORKSPACE pWorkspace) {
 
     // compute placement of master window(s)
     if (WINDOWS == 1 && !centerMasterWindow) {
-        PMASTERNODE->size     = WSSIZE;
-        PMASTERNODE->position = WSPOS;
+        static auto PALWAYSKEEPPOSITION = CConfigValue<Hyprlang::INT>("master:always_keep_position");
+        if (*PALWAYSKEEPPOSITION) {
+            const float WIDTH = WSSIZE.x * PMASTERNODE->percMaster;
+            float       nextX = 0;
+
+            if (orientation == ORIENTATION_RIGHT)
+                nextX = WSSIZE.x - WIDTH;
+            else if (orientation == ORIENTATION_CENTER)
+                nextX = (WSSIZE.x - WIDTH) / 2;
+
+            PMASTERNODE->size     = Vector2D(WIDTH, WSSIZE.y);
+            PMASTERNODE->position = WSPOS + Vector2D((double)nextX, 0.0);
+        } else {
+            PMASTERNODE->size     = WSSIZE;
+            PMASTERNODE->position = WSPOS;
+        }
 
         applyNodeDataToWindow(PMASTERNODE);
         return;
@@ -678,16 +692,12 @@ void CHyprMasterLayout::applyNodeDataToWindow(SMasterNodeData* pNode) {
 
         *PWINDOW->m_vRealPosition = wb.pos();
         *PWINDOW->m_vRealSize     = wb.size();
-
-        PWINDOW->sendWindowSize(wb.size());
     } else {
         CBox wb = {calcPos, calcSize};
         wb.round(); // avoid rounding mess
 
         *PWINDOW->m_vRealPosition = wb.pos();
         *PWINDOW->m_vRealSize     = wb.size();
-
-        PWINDOW->sendWindowSize(wb.size());
     }
 
     if (m_bForceWarps && !*PANIMATE) {
@@ -1357,7 +1367,7 @@ void CHyprMasterLayout::runOrientationCycle(SLayoutMessageHeader& header, CVarLi
 
     int        nextOrPrev = 0;
     for (size_t i = 0; i < cycle.size(); ++i) {
-        if (PWORKSPACEDATA->orientation == cycle.at(i)) {
+        if (PWORKSPACEDATA->orientation == cycle[i]) {
             nextOrPrev = i + direction;
             break;
         }

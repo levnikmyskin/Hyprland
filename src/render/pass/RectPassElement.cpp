@@ -9,10 +9,15 @@ void CRectPassElement::draw(const CRegion& damage) {
     if (data.box.w <= 0 || data.box.h <= 0)
         return;
 
+    if (!data.clipBox.empty())
+        g_pHyprOpenGL->m_RenderData.clipBox = data.clipBox;
+
     if (data.color.a == 1.F || !data.blur)
         g_pHyprOpenGL->renderRectWithDamage(data.box, data.color, damage, data.round, data.roundingPower);
     else
         g_pHyprOpenGL->renderRectWithBlur(data.box, data.color, data.round, data.roundingPower, data.blurA, data.xray);
+
+    g_pHyprOpenGL->m_RenderData.clipBox = {};
 }
 
 bool CRectPassElement::needsLiveBlur() {
@@ -28,5 +33,13 @@ std::optional<CBox> CRectPassElement::boundingBox() {
 }
 
 CRegion CRectPassElement::opaqueRegion() {
-    return data.color.a >= 1.F ? boundingBox()->expand(-data.round) : CRegion{};
+    if (data.color.a < 1.F)
+        return CRegion{};
+
+    CRegion rg = boundingBox()->expand(-data.round);
+
+    if (!data.clipBox.empty())
+        rg.intersect(data.clipBox);
+
+    return rg;
 }

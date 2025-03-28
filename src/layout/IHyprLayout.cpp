@@ -14,9 +14,17 @@
 #include "../managers/HookSystemManager.hpp"
 
 void IHyprLayout::onWindowCreated(PHLWINDOW pWindow, eDirection direction) {
-    CBox desiredGeometry = g_pXWaylandManager->getGeometryForWindow(pWindow);
+    CBox       desiredGeometry = g_pXWaylandManager->getGeometryForWindow(pWindow);
 
-    if (desiredGeometry.width <= 5 || desiredGeometry.height <= 5) {
+    const bool HASPERSISTENTSIZE =
+        std::any_of(pWindow->m_vMatchedRules.begin(), pWindow->m_vMatchedRules.end(), [](const auto& rule) { return rule->ruleType == CWindowRule::RULE_PERSISTENTSIZE; });
+
+    const auto STOREDSIZE = HASPERSISTENTSIZE ? g_pConfigManager->getStoredFloatingSize(pWindow) : std::nullopt;
+
+    if (STOREDSIZE.has_value()) {
+        Debug::log(LOG, "using stored size {}x{} for new window {}::{}", STOREDSIZE->x, STOREDSIZE->y, pWindow->m_szClass, pWindow->m_szTitle);
+        pWindow->m_vLastFloatingSize = STOREDSIZE.value();
+    } else if (desiredGeometry.width <= 5 || desiredGeometry.height <= 5) {
         const auto PMONITOR          = pWindow->m_pMonitor.lock();
         pWindow->m_vLastFloatingSize = PMONITOR->vecSize / 2.f;
     } else
@@ -176,11 +184,9 @@ void IHyprLayout::onWindowCreatedFloating(PHLWINDOW pWindow) {
         pWindow->m_vRealSize->warp();
     }
 
-    if (!pWindow->isX11OverrideRedirect()) {
-        pWindow->sendWindowSize(pWindow->m_vRealSize->goal());
-
+    if (!pWindow->isX11OverrideRedirect())
         g_pCompositor->changeWindowZOrder(pWindow, true);
-    } else {
+    else {
         pWindow->m_vPendingReportedSize = pWindow->m_vRealSize->goal();
         pWindow->m_vReportedSize        = pWindow->m_vPendingReportedSize;
     }
@@ -361,9 +367,6 @@ void IHyprLayout::onEndDragWindow() {
                 DRAGGINGWINDOW->m_bIsFloating       = pWindow->m_bIsFloating; // match the floating state of the window
                 DRAGGINGWINDOW->m_vLastFloatingSize = m_vDraggingWindowOriginalFloatSize;
                 DRAGGINGWINDOW->m_bDraggingTiled    = false;
-
-                if (pWindow->m_bIsFloating)
-                    DRAGGINGWINDOW->sendWindowSize(DRAGGINGWINDOW->m_vRealSize->goal()); // match the size of the window
 
                 static auto USECURRPOS = CConfigValue<Hyprlang::INT>("group:insert_after_current");
                 (*USECURRPOS ? pWindow : pWindow->getGroupTail())->insertWindowToGroup(DRAGGINGWINDOW);
@@ -606,10 +609,11 @@ void IHyprLayout::onMouseMove(const Vector2D& mousePos) {
 
         if (*PANIMATEMOUSE)
             *DRAGGINGWINDOW->m_vRealPosition = wb.pos();
-        else
+        else {
             DRAGGINGWINDOW->m_vRealPosition->setValueAndWarp(wb.pos());
+            DRAGGINGWINDOW->sendWindowSize();
+        }
 
-        DRAGGINGWINDOW->sendWindowSize(DRAGGINGWINDOW->m_vRealSize->goal());
     } else if (g_pInputManager->dragMode == MBIND_RESIZE || g_pInputManager->dragMode == MBIND_RESIZE_FORCE_RATIO || g_pInputManager->dragMode == MBIND_RESIZE_BLOCK_RATIO) {
         if (DRAGGINGWINDOW->m_bIsFloating) {
 
@@ -679,9 +683,8 @@ void IHyprLayout::onMouseMove(const Vector2D& mousePos) {
             } else {
                 DRAGGINGWINDOW->m_vRealSize->setValueAndWarp(wb.size());
                 DRAGGINGWINDOW->m_vRealPosition->setValueAndWarp(wb.pos());
+                DRAGGINGWINDOW->sendWindowSize();
             }
-
-            DRAGGINGWINDOW->sendWindowSize(DRAGGINGWINDOW->m_vRealSize->goal());
         } else {
             resizeActiveWindow(TICKDELTA, m_eGrabbedCorner, DRAGGINGWINDOW);
         }
@@ -787,7 +790,6 @@ void IHyprLayout::changeWindowFloatingMode(PHLWINDOW pWindow) {
 
     g_pCompositor->updateWindowAnimatedDecorationValues(pWindow);
     pWindow->updateToplevel();
-    pWindow->sendWindowSize(pWindow->m_vRealSize->goal());
     g_pHyprRenderer->damageWindow(pWindow);
 }
 

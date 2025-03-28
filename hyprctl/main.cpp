@@ -12,10 +12,8 @@
 #include <sys/un.h>
 #include <pwd.h>
 #include <unistd.h>
-#include <ranges>
 #include <algorithm>
 #include <csignal>
-#include <format>
 
 #include <iostream>
 #include <string>
@@ -151,8 +149,16 @@ int rollingRead(const int socket) {
 int request(std::string arg, int minArgs = 0, bool needRoll = false) {
     const auto SERVERSOCKET = socket(AF_UNIX, SOCK_STREAM, 0);
 
-    auto       t = timeval{.tv_sec = 5, .tv_usec = 0};
-    setsockopt(SERVERSOCKET, SOL_SOCKET, SO_RCVTIMEO, &t, sizeof(struct timeval));
+    if (SERVERSOCKET < 0) {
+        log("Couldn't open a socket (1)");
+        return 1;
+    }
+
+    auto t = timeval{.tv_sec = 5, .tv_usec = 0};
+    if (setsockopt(SERVERSOCKET, SOL_SOCKET, SO_RCVTIMEO, &t, sizeof(struct timeval)) < 0) {
+        log("Couldn't set socket timeout (2)");
+        return 2;
+    }
 
     const auto ARGS = std::count(arg.begin(), arg.end(), ' ');
 
@@ -161,14 +167,9 @@ int request(std::string arg, int minArgs = 0, bool needRoll = false) {
         return -1;
     }
 
-    if (SERVERSOCKET < 0) {
-        log("Couldn't open a socket (1)");
-        return 1;
-    }
-
     if (instanceSignature.empty()) {
-        log("HYPRLAND_INSTANCE_SIGNATURE was not set! (Is Hyprland running?)");
-        return 2;
+        log("HYPRLAND_INSTANCE_SIGNATURE was not set! (Is Hyprland running?) (3)");
+        return 3;
     }
 
     const std::string USERID = std::to_string(getUID());
@@ -181,39 +182,40 @@ int request(std::string arg, int minArgs = 0, bool needRoll = false) {
     strncpy(serverAddress.sun_path, socketPath.c_str(), sizeof(serverAddress.sun_path) - 1);
 
     if (connect(SERVERSOCKET, (sockaddr*)&serverAddress, SUN_LEN(&serverAddress)) < 0) {
-        log("Couldn't connect to " + socketPath + ". (3)");
-        return 3;
+        log("Couldn't connect to " + socketPath + ". (4)");
+        return 4;
     }
 
     auto sizeWritten = write(SERVERSOCKET, arg.c_str(), arg.length());
 
     if (sizeWritten < 0) {
-        log("Couldn't write (4)");
-        return 4;
+        log("Couldn't write (5)");
+        return 5;
     }
 
     if (needRoll)
         return rollingRead(SERVERSOCKET);
 
-    std::string reply        = "";
-    char        buffer[8192] = {0};
+    std::string      reply               = "";
+    constexpr size_t BUFFER_SIZE         = 8192;
+    char             buffer[BUFFER_SIZE] = {0};
 
-    sizeWritten = read(SERVERSOCKET, buffer, 8192);
+    sizeWritten = read(SERVERSOCKET, buffer, BUFFER_SIZE);
 
     if (sizeWritten < 0) {
         if (errno == EWOULDBLOCK)
             log("Hyprland IPC didn't respond in time\n");
-        log("Couldn't read (5)");
-        return 5;
+        log("Couldn't read (6)");
+        return 6;
     }
 
     reply += std::string(buffer, sizeWritten);
 
-    while (sizeWritten == 8192) {
-        sizeWritten = read(SERVERSOCKET, buffer, 8192);
+    while (sizeWritten == BUFFER_SIZE) {
+        sizeWritten = read(SERVERSOCKET, buffer, BUFFER_SIZE);
         if (sizeWritten < 0) {
-            log("Couldn't read (5)");
-            return 5;
+            log("Couldn't read (6)");
+            return 6;
         }
         reply += std::string(buffer, sizeWritten);
     }
@@ -225,7 +227,7 @@ int request(std::string arg, int minArgs = 0, bool needRoll = false) {
     return 0;
 }
 
-int requestHyprpaper(std::string arg) {
+int requestIPC(std::string filename, std::string arg) {
     const auto SERVERSOCKET = socket(AF_UNIX, SOCK_STREAM, 0);
 
     if (SERVERSOCKET < 0) {
@@ -243,7 +245,7 @@ int requestHyprpaper(std::string arg) {
 
     const std::string USERID = std::to_string(getUID());
 
-    std::string       socketPath = getRuntimeDir() + "/" + instanceSignature + "/.hyprpaper.sock";
+    std::string       socketPath = getRuntimeDir() + "/" + instanceSignature + "/" + filename;
 
     strncpy(serverAddress.sun_path, socketPath.c_str(), sizeof(serverAddress.sun_path) - 1);
 
@@ -261,10 +263,10 @@ int requestHyprpaper(std::string arg) {
         log("Couldn't write (4)");
         return 4;
     }
+    constexpr size_t BUFFER_SIZE         = 8192;
+    char             buffer[BUFFER_SIZE] = {0};
 
-    char buffer[8192] = {0};
-
-    sizeWritten = read(SERVERSOCKET, buffer, 8192);
+    sizeWritten = read(SERVERSOCKET, buffer, BUFFER_SIZE);
 
     if (sizeWritten < 0) {
         log("Couldn't read (5)");
@@ -276,6 +278,14 @@ int requestHyprpaper(std::string arg) {
     log(std::string(buffer));
 
     return 0;
+}
+
+int requestHyprpaper(std::string arg) {
+    return requestIPC(".hyprpaper.sock", arg);
+}
+
+int requestHyprsunset(std::string arg) {
+    return requestIPC(".hyprsunset.sock", arg);
 }
 
 void batchRequest(std::string arg, bool json) {
@@ -382,6 +392,8 @@ int main(int argc, char** argv) {
 
                 if (cmd == "hyprpaper") {
                     std::println("{}", HYPRPAPER_HELP);
+                } else if (cmd == "hyprsunset") {
+                    std::println("{}", HYPRSUNSET_HELP);
                 } else if (cmd == "notify") {
                     std::println("{}", NOTIFY_HELP);
                 } else if (cmd == "output") {
@@ -463,6 +475,8 @@ int main(int argc, char** argv) {
         batchRequest(fullRequest, json);
     else if (fullRequest.contains("/hyprpaper"))
         exitStatus = requestHyprpaper(fullRequest);
+    else if (fullRequest.contains("/hyprsunset"))
+        exitStatus = requestHyprsunset(fullRequest);
     else if (fullRequest.contains("/switchxkblayout"))
         exitStatus = request(fullRequest, 2);
     else if (fullRequest.contains("/seterror"))

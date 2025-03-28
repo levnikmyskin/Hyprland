@@ -15,6 +15,7 @@
 #include "../protocols/core/Seat.hpp"
 #include "../managers/eventLoop/EventLoopManager.hpp"
 #include "../managers/SeatManager.hpp"
+#include "../managers/ANRManager.hpp"
 #include "../protocols/XWaylandShell.hpp"
 #include "../protocols/core/Compositor.hpp"
 using namespace Hyprutils::OS;
@@ -59,7 +60,7 @@ void CXWM::handleDestroy(xcb_destroy_notify_event_t* e) {
     std::erase_if(surfaces, [XSURF](const auto& other) { return XSURF == other; });
 }
 
-void CXWM::handleConfigure(xcb_configure_request_event_t* e) {
+void CXWM::handleConfigureRequest(xcb_configure_request_event_t* e) {
     const auto XSURF = windowForXID(e->window);
 
     if (!XSURF)
@@ -70,8 +71,9 @@ void CXWM::handleConfigure(xcb_configure_request_event_t* e) {
     if (!(MASK & GEOMETRY))
         return;
 
-    XSURF->events.configure.emit(CBox{MASK & XCB_CONFIG_WINDOW_X ? e->x : XSURF->geometry.x, MASK & XCB_CONFIG_WINDOW_Y ? e->y : XSURF->geometry.y,
-                                      MASK & XCB_CONFIG_WINDOW_WIDTH ? e->width : XSURF->geometry.width, MASK & XCB_CONFIG_WINDOW_HEIGHT ? e->height : XSURF->geometry.height});
+    XSURF->events.configureRequest.emit(CBox{MASK & XCB_CONFIG_WINDOW_X ? e->x : XSURF->geometry.x, MASK & XCB_CONFIG_WINDOW_Y ? e->y : XSURF->geometry.y,
+                                             MASK & XCB_CONFIG_WINDOW_WIDTH ? e->width : XSURF->geometry.width,
+                                             MASK & XCB_CONFIG_WINDOW_HEIGHT ? e->height : XSURF->geometry.height});
 }
 
 void CXWM::handleConfigureNotify(xcb_configure_notify_event_t* e) {
@@ -282,6 +284,16 @@ void CXWM::readProp(SP<CXWaylandSurface> XSURF, uint32_t atom, xcb_get_property_
                 XSURF->sizeHints->max_height = -1;
             }
         }
+    } else if (atom == HYPRATOMS["WM_PROTOCOLS"]) {
+        if (reply->type == XCB_ATOM_ATOM) {
+            auto                  atoms = (xcb_atom_t*)xcb_get_property_value(reply);
+            std::vector<uint32_t> vec;
+            vec.reserve(reply->value_len);
+            for (size_t i = 0; i < reply->value_len; ++i) {
+                vec.emplace_back(atoms[i]);
+            }
+            XSURF->protocols = vec;
+        }
     } else {
         Debug::log(TRACE, "[xwm] Unhandled prop {} -> {}", atom, propName);
         return;
@@ -314,16 +326,14 @@ void CXWM::handleClientMessage(xcb_client_message_event_t* e) {
     if (!XSURF)
         return;
 
-    std::string propName = "?";
-    for (auto const& ha : HYPRATOMS) {
-        if (ha.second != e->type)
-            continue;
+    std::string propName = getAtomName(e->type);
 
-        propName = ha.first;
-        break;
-    }
-
-    if (e->type == HYPRATOMS["WL_SURFACE_ID"]) {
+    if (e->type == HYPRATOMS["WM_PROTOCOLS"]) {
+        if (e->data.data32[1] == XSURF->lastPingSeq && e->data.data32[0] == HYPRATOMS["_NET_WM_PING"]) {
+            g_pANRManager->onResponse(XSURF);
+            return;
+        }
+    } else if (e->type == HYPRATOMS["WL_SURFACE_ID"]) {
         if (XSURF->surface) {
             Debug::log(WARN, "[xwm] Re-assignment of WL_SURFACE_ID");
             dissociate(XSURF);
@@ -484,7 +494,7 @@ void CXWM::focusWindow(SP<CXWaylandSurface> surf) {
     if (surf->overrideRedirect)
         return;
 
-    xcb_client_message_data_t msg = {0};
+    xcb_client_message_data_t msg = {{0}};
     msg.data32[0]                 = HYPRATOMS["WM_TAKE_FOCUS"];
     msg.data32[1]                 = XCB_TIME_CURRENT_TIME;
 
@@ -571,9 +581,10 @@ void CXWM::handleSelectionNotify(xcb_selection_notify_event_t* e) {
     SXSelection* sel = getSelection(e->selection);
 
     if (e->property == XCB_ATOM_NONE) {
-        if (sel->transfer) {
+        auto it = std::ranges::find_if(sel->transfers, [](const auto& t) { return !t->propertyReply; });
+        if (it != sel->transfers.end()) {
             Debug::log(TRACE, "[xwm] converting selection failed");
-            sel->transfer.reset();
+            sel->transfers.erase(it);
         }
     } else if (e->target == HYPRATOMS["TARGETS"] && sel == &clipboard) {
         if (!focusedSurface) {
@@ -582,14 +593,23 @@ void CXWM::handleSelectionNotify(xcb_selection_notify_event_t* e) {
         }
 
         setClipboardToWayland(*sel);
-    } else if (sel->transfer)
+    } else if (!sel->transfers.empty())
         getTransferData(*sel);
 }
 
 bool CXWM::handleSelectionPropertyNotify(xcb_property_notify_event_t* e) {
-    // Debug::log(LOG, "[xwm] Selection property notify for {} target {}", e->atom, e->window);
+    if (e->state != XCB_PROPERTY_DELETE)
+        return false;
 
-    // Debug::log(ERR, "[xwm] FIXME: CXWM::handleSelectionPropertyNotify stub");
+    auto it = std::ranges::find_if(clipboard.transfers, [e](const auto& t) { return t->incomingWindow == e->window; });
+    if (it != clipboard.transfers.end()) {
+        if (!(*it)->getIncomingSelectionProp(true)) {
+            clipboard.transfers.erase(it);
+            return false;
+        }
+        getTransferData(clipboard);
+        return true;
+    }
 
     return false;
 }
@@ -757,7 +777,7 @@ int CXWM::onEvent(int fd, uint32_t mask) {
         switch (event->response_type & XCB_EVENT_RESPONSE_TYPE_MASK) {
             case XCB_CREATE_NOTIFY: handleCreate((xcb_create_notify_event_t*)event); break;
             case XCB_DESTROY_NOTIFY: handleDestroy((xcb_destroy_notify_event_t*)event); break;
-            case XCB_CONFIGURE_REQUEST: handleConfigure((xcb_configure_request_event_t*)event); break;
+            case XCB_CONFIGURE_REQUEST: handleConfigureRequest((xcb_configure_request_event_t*)event); break;
             case XCB_CONFIGURE_NOTIFY: handleConfigureNotify((xcb_configure_notify_event_t*)event); break;
             case XCB_MAP_REQUEST: handleMapRequest((xcb_map_request_event_t*)event); break;
             case XCB_MAP_NOTIFY: handleMapNotify((xcb_map_notify_event_t*)event); break;
@@ -1045,19 +1065,20 @@ void CXWM::onNewResource(SP<CXWaylandSurfaceResource> resource) {
 }
 
 void CXWM::readWindowData(SP<CXWaylandSurface> surf) {
-    const std::array<xcb_atom_t, 8> interestingProps = {
+    const std::array<xcb_atom_t, 9> interestingProps = {
         XCB_ATOM_WM_CLASS,          XCB_ATOM_WM_NAME,          XCB_ATOM_WM_TRANSIENT_FOR,        HYPRATOMS["WM_HINTS"],
         HYPRATOMS["_NET_WM_STATE"], HYPRATOMS["_NET_WM_NAME"], HYPRATOMS["_NET_WM_WINDOW_TYPE"], HYPRATOMS["WM_NORMAL_HINTS"],
+        HYPRATOMS["WM_PROTOCOLS"],
     };
 
     for (size_t i = 0; i < interestingProps.size(); i++) {
-        xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, surf->xID, interestingProps.at(i), XCB_ATOM_ANY, 0, 2048);
+        xcb_get_property_cookie_t cookie = xcb_get_property(connection, 0, surf->xID, interestingProps[i], XCB_ATOM_ANY, 0, 2048);
         xcb_get_property_reply_t* reply  = xcb_get_property_reply(connection, cookie, nullptr);
         if (!reply) {
             Debug::log(ERR, "[xwm] Failed to get window property");
             continue;
         }
-        readProp(surf, interestingProps.at(i), reply);
+        readProp(surf, interestingProps[i], reply);
         free(reply);
     }
 }
@@ -1104,20 +1125,22 @@ void CXWM::dissociate(SP<CXWaylandSurface> surf) {
 }
 
 void CXWM::updateClientList() {
-    std::erase_if(mappedSurfaces, [](const auto& e) { return e.expired() || !e->mapped; });
-    std::erase_if(mappedSurfacesStacking, [](const auto& e) { return e.expired() || !e->mapped; });
-
     std::vector<xcb_window_t> windows;
-    for (auto const& m : mappedSurfaces) {
-        windows.push_back(m->xID);
+    windows.reserve(mappedSurfaces.size());
+
+    for (auto const& s : mappedSurfaces) {
+        if (auto surf = s.lock(); surf)
+            windows.push_back(surf->xID);
     }
 
     xcb_change_property(connection, XCB_PROP_MODE_REPLACE, screen->root, HYPRATOMS["_NET_CLIENT_LIST"], XCB_ATOM_WINDOW, 32, windows.size(), windows.data());
 
     windows.clear();
+    windows.reserve(mappedSurfacesStacking.size());
 
-    for (auto const& m : mappedSurfacesStacking) {
-        windows.push_back(m->xID);
+    for (auto const& s : mappedSurfacesStacking) {
+        if (auto surf = s.lock(); surf)
+            windows.push_back(surf->xID);
     }
 
     xcb_change_property(connection, XCB_PROP_MODE_REPLACE, screen->root, HYPRATOMS["_NET_CLIENT_LIST_STACKING"], XCB_ATOM_WINDOW, 32, windows.size(), windows.data());
@@ -1177,17 +1200,52 @@ static int writeDataSource(int fd, uint32_t mask, void* data) {
 void CXWM::getTransferData(SXSelection& sel) {
     Debug::log(LOG, "[xwm] getTransferData");
 
-    sel.transfer->getIncomingSelectionProp(true);
-
-    if (sel.transfer->propertyReply->type == HYPRATOMS["INCR"]) {
-        Debug::log(ERR, "[xwm] Transfer is INCR, which we don't support :(");
-        sel.transfer.reset();
+    auto it = std::ranges::find_if(sel.transfers, [](const auto& t) { return !t->propertyReply; });
+    if (it == sel.transfers.end()) {
+        Debug::log(ERR, "[xwm] No pending transfer found");
         return;
-    } else {
-        sel.onWrite();
-        if (sel.transfer)
-            sel.transfer->eventSource = wl_event_loop_add_fd(g_pCompositor->m_sWLEventLoop, sel.transfer->wlFD.get(), WL_EVENT_WRITABLE, ::writeDataSource, &sel);
     }
+
+    auto& transfer = *it;
+    if (!transfer || !transfer->incomingWindow) {
+        Debug::log(ERR, "[xwm] Invalid transfer state");
+        sel.transfers.erase(it);
+        return;
+    }
+
+    if (!transfer->getIncomingSelectionProp(true)) {
+        Debug::log(ERR, "[xwm] Failed to get property data");
+        sel.transfers.erase(it);
+        return;
+    }
+
+    if (!transfer->propertyReply) {
+        Debug::log(ERR, "[xwm] No property reply");
+        sel.transfers.erase(it);
+        return;
+    }
+
+    if (transfer->propertyReply->type == HYPRATOMS["INCR"]) {
+        transfer->incremental   = true;
+        transfer->propertyStart = 0;
+        free(transfer->propertyReply);
+        transfer->propertyReply = nullptr;
+        return;
+    }
+
+    const size_t pos = std::distance(sel.transfers.begin(), it);
+    sel.onWrite();
+
+    if (pos >= sel.transfers.size())
+        return;
+
+    auto newIt = sel.transfers.begin() + pos;
+    if (newIt == sel.transfers.end() || !(*newIt))
+        return;
+
+    auto& updatedTransfer = *newIt;
+    if (updatedTransfer->eventSource && updatedTransfer->wlFD.get() != -1)
+        updatedTransfer->eventSource = wl_event_loop_add_fd(g_pCompositor->m_sWLEventLoop, updatedTransfer->wlFD.get(), WL_EVENT_WRITABLE, ::writeDataSource, &sel);
 }
 
 void CXWM::setCursor(unsigned char* pixData, uint32_t stride, const Vector2D& size, const Vector2D& hotspot) {
@@ -1221,29 +1279,6 @@ void CXWM::setCursor(unsigned char* pixData, uint32_t stride, const Vector2D& si
     uint32_t values[] = {cursorXID};
     xcb_change_window_attributes(connection, screen->root, XCB_CW_CURSOR, values);
     xcb_flush(connection);
-}
-
-void CXWM::sendDndEvent(SP<CWLSurfaceResource> destination, xcb_atom_t type, xcb_client_message_data_t& data) {
-    auto XSURF = windowForWayland(destination);
-
-    if (!XSURF) {
-        Debug::log(ERR, "[xwm] No xwayland surface for destination in sendDndEvent");
-        return;
-    }
-
-    xcb_client_message_event_t event = {
-        .response_type = XCB_CLIENT_MESSAGE,
-        .format        = 32,
-        .sequence      = 0,
-        .window        = XSURF->xID,
-        .type          = type,
-        .data          = data,
-    };
-
-    xcb_send_event(g_pXWayland->pWM->connection,
-                   0, // propagate
-                   XSURF->xID, XCB_EVENT_MASK_NO_EVENT, (const char*)&event);
-    xcb_flush(g_pXWayland->pWM->connection);
 }
 
 SP<CX11DataDevice> CXWM::getDataDevice() {
@@ -1290,16 +1325,21 @@ void SXSelection::onKeyboardFocus() {
 }
 
 int SXSelection::onRead(int fd, uint32_t mask) {
-    // TODO: support INCR
+    auto it = std::ranges::find_if(transfers, [fd](const auto& t) { return t->wlFD.get() == fd; });
+    if (it == transfers.end()) {
+        Debug::log(ERR, "[xwm] No transfer found for fd {}", fd);
+        return 0;
+    }
 
-    size_t pre = transfer->data.size();
+    auto&  transfer = *it;
+    size_t pre      = transfer->data.size();
     transfer->data.resize(INCR_CHUNK_SIZE + pre);
 
     auto len = read(fd, transfer->data.data() + pre, INCR_CHUNK_SIZE - 1);
     if (len < 0) {
         Debug::log(ERR, "[xwm] readDataSource died");
         g_pXWayland->pWM->selectionSendNotify(&transfer->request, false);
-        transfer.reset();
+        transfers.erase(it);
         return 0;
     }
 
@@ -1311,7 +1351,7 @@ int SXSelection::onRead(int fd, uint32_t mask) {
                             transfer->data.size(), transfer->data.data());
         xcb_flush(g_pXWayland->pWM->connection);
         g_pXWayland->pWM->selectionSendNotify(&transfer->request, true);
-        transfer.reset();
+        transfers.erase(it);
     } else
         Debug::log(LOG, "[xwm] Received {} bytes, waiting...", len);
 
@@ -1346,7 +1386,7 @@ bool SXSelection::sendData(xcb_selection_request_event_t* e, std::string mime) {
         mime = *MIMES.begin();
     }
 
-    transfer          = makeUnique<SXTransfer>(*this);
+    auto transfer     = makeUnique<SXTransfer>(*this);
     transfer->request = *e;
 
     int p[2];
@@ -1368,18 +1408,28 @@ bool SXSelection::sendData(xcb_selection_request_event_t* e, std::string mime) {
     selection->send(mime, CFileDescriptor{p[1]});
 
     transfer->eventSource = wl_event_loop_add_fd(g_pCompositor->m_sWLEventLoop, transfer->wlFD.get(), WL_EVENT_READABLE, ::readDataSource, this);
+    transfers.emplace_back(std::move(transfer));
 
     return true;
 }
 
 int SXSelection::onWrite() {
+    auto it = std::ranges::find_if(transfers, [](const auto& t) { return t->propertyReply; });
+    if (it == transfers.end()) {
+        Debug::log(ERR, "[xwm] No transfer with property data found");
+        return 0;
+    }
+
+    auto&   transfer  = *it;
     char*   property  = (char*)xcb_get_property_value(transfer->propertyReply);
     int     remainder = xcb_get_property_value_length(transfer->propertyReply) - transfer->propertyStart;
 
     ssize_t len = write(transfer->wlFD.get(), property + transfer->propertyStart, remainder);
     if (len == -1) {
+        if (errno == EAGAIN)
+            return 1;
         Debug::log(ERR, "[xwm] write died in transfer get");
-        transfer.reset();
+        transfers.erase(it);
         return 0;
     }
 
@@ -1388,7 +1438,13 @@ int SXSelection::onWrite() {
         Debug::log(LOG, "[xwm] wl client read partially: len {}", len);
     } else {
         Debug::log(LOG, "[xwm] cb transfer to wl client complete, read {} bytes", len);
-        transfer.reset();
+        if (!transfer->incremental) {
+            transfers.erase(it);
+        } else {
+            free(transfer->propertyReply);
+            transfer->propertyReply = nullptr;
+            transfer->propertyStart = 0;
+        }
     }
 
     return 1;

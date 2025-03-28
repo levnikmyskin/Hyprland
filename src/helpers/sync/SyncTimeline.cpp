@@ -19,12 +19,13 @@ SP<CSyncTimeline> CSyncTimeline::create(int drmFD_) {
     return timeline;
 }
 
-SP<CSyncTimeline> CSyncTimeline::create(int drmFD_, int drmSyncobjFD) {
-    auto timeline   = SP<CSyncTimeline>(new CSyncTimeline);
-    timeline->drmFD = drmFD_;
-    timeline->self  = timeline;
+SP<CSyncTimeline> CSyncTimeline::create(int drmFD_, CFileDescriptor&& drmSyncobjFD) {
+    auto timeline       = SP<CSyncTimeline>(new CSyncTimeline);
+    timeline->drmFD     = drmFD_;
+    timeline->syncobjFd = std::move(drmSyncobjFD);
+    timeline->self      = timeline;
 
-    if (drmSyncobjFDToHandle(drmFD_, drmSyncobjFD, &timeline->handle)) {
+    if (drmSyncobjFDToHandle(drmFD_, timeline->syncobjFd.get(), &timeline->handle)) {
         Debug::log(ERR, "CSyncTimeline: failed to create a drm syncobj from fd??");
         return nullptr;
     }
@@ -33,6 +34,13 @@ SP<CSyncTimeline> CSyncTimeline::create(int drmFD_, int drmSyncobjFD) {
 }
 
 CSyncTimeline::~CSyncTimeline() {
+    for (auto& w : waiters) {
+        if (w->source) {
+            wl_event_source_remove(w->source);
+            w->source = nullptr;
+        }
+    }
+
     if (handle == 0)
         return;
 
@@ -122,6 +130,17 @@ void CSyncTimeline::removeWaiter(SWaiter* w) {
         w->source = nullptr;
     }
     std::erase_if(waiters, [w](const auto& e) { return e.get() == w; });
+}
+
+void CSyncTimeline::removeAllWaiters() {
+    for (auto& w : waiters) {
+        if (w->source) {
+            wl_event_source_remove(w->source);
+            w->source = nullptr;
+        }
+    }
+
+    waiters.clear();
 }
 
 CFileDescriptor CSyncTimeline::exportAsSyncFileFD(uint64_t src) {

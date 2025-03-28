@@ -11,6 +11,7 @@
   aquamarine,
   binutils,
   cairo,
+  epoll-shim,
   git,
   glaze,
   hyprcursor,
@@ -26,7 +27,7 @@
   libinput,
   libxkbcommon,
   libuuid,
-  mesa,
+  libgbm,
   pango,
   pciutils,
   re2,
@@ -130,7 +131,7 @@ in
           libinput
           libuuid
           libxkbcommon
-          mesa
+          libgbm
           pango
           pciutils
           re2
@@ -141,6 +142,7 @@ in
           wayland-scanner
           xorg.libXcursor
         ]
+        (optionals customStdenv.hostPlatform.isBSD [ epoll-shim ])
         (optionals customStdenv.hostPlatform.isMusl [libexecinfo])
         (optionals enableXWayland [
           xorg.libxcb
@@ -153,15 +155,18 @@ in
         (optional withSystemd systemd)
       ];
 
+      strictDeps = true;
+
       mesonBuildType =
         if debug
-        then "debugoptimized"
+        then "debug"
         else "release";
 
       mesonFlags = flatten [
         (mapAttrsToList mesonEnable {
           "xwayland" = enableXWayland;
           "legacy_renderer" = legacyRenderer;
+          "systemd" = withSystemd;
           "uwsm" = false;
           "hyprpm" = false;
         })

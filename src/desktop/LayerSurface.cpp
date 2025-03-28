@@ -31,10 +31,9 @@ PHLLS CLayerSurface::create(SP<CLayerShellResource> resource) {
 
     pLS->szNamespace = resource->layerNamespace;
 
-    pLS->layer              = resource->current.layer;
-    pLS->popupHead          = makeUnique<CPopup>(pLS);
-    pLS->popupHead->m_pSelf = pLS->popupHead;
-    pLS->monitor            = pMonitor;
+    pLS->layer     = resource->current.layer;
+    pLS->popupHead = CPopup::create(pLS);
+    pLS->monitor   = pMonitor;
     pMonitor->m_aLayerSurfaceLayers[resource->current.layer].emplace_back(pLS);
 
     pLS->forceBlur = g_pConfigManager->shouldBlurLS(pLS->szNamespace);
@@ -98,7 +97,8 @@ void CLayerSurface::onDestroy() {
             onUnmap();
         } else {
             Debug::log(LOG, "Removing LayerSurface that wasn't mapped.");
-            alpha->setValueAndWarp(0.f);
+            if (alpha)
+                alpha->setValueAndWarp(0.f);
             fadingOut = true;
             g_pCompositor->addToFadingOutSafe(self.lock());
         }
@@ -583,4 +583,16 @@ int CLayerSurface::popupsCount() {
 
 MONITORID CLayerSurface::monitorID() {
     return monitor ? monitor->ID : MONITOR_INVALID;
+}
+
+pid_t CLayerSurface::getPID() {
+    pid_t PID = -1;
+
+    if (!layerSurface || !layerSurface->surface || !layerSurface->surface->getResource() || !layerSurface->surface->getResource()->resource() ||
+        !layerSurface->surface->getResource()->resource()->client)
+        return -1;
+
+    wl_client_get_credentials(layerSurface->surface->getResource()->resource()->client, &PID, nullptr, nullptr);
+
+    return PID;
 }

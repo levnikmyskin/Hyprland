@@ -32,11 +32,14 @@
 #include "pass/RendererHintsPassElement.hpp"
 #include "pass/SurfacePassElement.hpp"
 #include "debug/Log.hpp"
-#include "protocols/ColorManagement.hpp"
+#include "../protocols/ColorManagement.hpp"
+#include "../protocols/types/ContentType.hpp"
 
 #include <hyprutils/utils/ScopeGuard.hpp>
 using namespace Hyprutils::Utils;
 using namespace Hyprutils::OS;
+using enum NContentType::eContentType;
+using namespace NColorManagement;
 
 extern "C" {
 #include <xf86drm.h>
@@ -375,7 +378,10 @@ void CHyprRenderer::renderWorkspaceWindows(PHLMONITOR pMonitor, PHLWORKSPACE pWo
         if (w->m_bIsFloating)
             continue; // floating are in the second pass
 
-        if (pWorkspace->m_bIsSpecialWorkspace != w->onSpecialWorkspace())
+        // some things may force us to ignore the special/not special disparity
+        const bool IGNORE_SPECIAL_CHECK = w->m_iMonitorMovedFrom != -1 && (w->m_pWorkspace && !w->m_pWorkspace->isVisible());
+
+        if (!IGNORE_SPECIAL_CHECK && pWorkspace->m_bIsSpecialWorkspace != w->onSpecialWorkspace())
             continue;
 
         // render active window after all others of this pass
@@ -386,10 +392,13 @@ void CHyprRenderer::renderWorkspaceWindows(PHLMONITOR pMonitor, PHLWORKSPACE pWo
 
         // render the bad boy
         renderWindow(w.lock(), pMonitor, time, true, RENDER_PASS_MAIN);
+        w.reset();
     }
 
     if (lastWindow)
         renderWindow(lastWindow, pMonitor, time, true, RENDER_PASS_MAIN);
+
+    lastWindow.reset();
 
     // Non-floating popup
     for (auto& w : windows) {
@@ -399,7 +408,10 @@ void CHyprRenderer::renderWorkspaceWindows(PHLMONITOR pMonitor, PHLWORKSPACE pWo
         if (w->m_bIsFloating)
             continue; // floating are in the second pass
 
-        if (pWorkspace->m_bIsSpecialWorkspace != w->onSpecialWorkspace())
+        // some things may force us to ignore the special/not special disparity
+        const bool IGNORE_SPECIAL_CHECK = w->m_iMonitorMovedFrom != -1 && (w->m_pWorkspace && !w->m_pWorkspace->isVisible());
+
+        if (!IGNORE_SPECIAL_CHECK && pWorkspace->m_bIsSpecialWorkspace != w->onSpecialWorkspace())
             continue;
 
         // render the bad boy
@@ -415,7 +427,10 @@ void CHyprRenderer::renderWorkspaceWindows(PHLMONITOR pMonitor, PHLWORKSPACE pWo
         if (!w->m_bIsFloating || w->m_bPinned)
             continue;
 
-        if (pWorkspace->m_bIsSpecialWorkspace != w->onSpecialWorkspace())
+        // some things may force us to ignore the special/not special disparity
+        const bool IGNORE_SPECIAL_CHECK = w->m_iMonitorMovedFrom != -1 && (w->m_pWorkspace && !w->m_pWorkspace->isVisible());
+
+        if (!IGNORE_SPECIAL_CHECK && pWorkspace->m_bIsSpecialWorkspace != w->onSpecialWorkspace())
             continue;
 
         if (pWorkspace->m_bIsSpecialWorkspace && w->m_pMonitor != pWorkspace->m_pMonitor)
@@ -457,6 +472,12 @@ void CHyprRenderer::renderWindow(PHLWINDOW pWindow, PHLMONITOR pMonitor, timespe
     if (ignorePosition) {
         renderdata.pos.x = pMonitor->vecPosition.x;
         renderdata.pos.y = pMonitor->vecPosition.y;
+    } else {
+        const bool ANR = pWindow->isNotResponding();
+        if (ANR && pWindow->m_notRespondingTint->goal() != 0.2F)
+            *pWindow->m_notRespondingTint = 0.2F;
+        else if (!ANR && pWindow->m_notRespondingTint->goal() != 0.F)
+            *pWindow->m_notRespondingTint = 0.F;
     }
 
     if (standalone)
@@ -1192,7 +1213,10 @@ void CHyprRenderer::renderMonitor(PHLMONITOR pMonitor) {
 
     pMonitor->tearingState.activelyTearing = shouldTear;
 
-    if (*PDIRECTSCANOUT && !shouldTear) {
+    if ((*PDIRECTSCANOUT == 1 ||
+         (*PDIRECTSCANOUT == 2 && pMonitor->activeWorkspace && pMonitor->activeWorkspace->m_bHasFullscreenWindow &&
+          pMonitor->activeWorkspace->m_efFullscreenMode == FSMODE_FULLSCREEN && pMonitor->activeWorkspace->getFullscreenWindow()->getContentType() == CONTENT_TYPE_GAME)) &&
+        !shouldTear) {
         if (pMonitor->attemptDirectScanout()) {
             return;
         } else if (!pMonitor->lastScanout.expired()) {
@@ -1384,116 +1408,98 @@ void CHyprRenderer::renderMonitor(PHLMONITOR pMonitor) {
     }
 }
 
-static const auto BT709 = Aquamarine::IOutput::SChromaticityCoords{
-    .red   = Aquamarine::IOutput::xy{.x = 0.64, .y = 0.33},
-    .green = Aquamarine::IOutput::xy{.x = 0.30, .y = 0.60},
-    .blue  = Aquamarine::IOutput::xy{.x = 0.15, .y = 0.06},
-    .white = Aquamarine::IOutput::xy{.x = 0.3127, .y = 0.3290},
-};
+static const hdr_output_metadata NO_HDR_METADATA = {.hdmi_metadata_type1 = hdr_metadata_infoframe{.eotf = 0}};
 
-static hdr_output_metadata createHDRMetadata(uint8_t eotf, Aquamarine::IOutput::SParsedEDID edid) {
-    if (eotf == 0)
-        return hdr_output_metadata{.hdmi_metadata_type1 = hdr_metadata_infoframe{.eotf = 0}}; // empty metadata for SDR
-
-    const auto toNits      = [](float value) { return uint16_t(std::round(value)); };
-    const auto to16Bit     = [](float value) { return uint16_t(std::round(value * 50000)); };
-    const auto colorimetry = edid.chromaticityCoords.value_or(BT709);
-
-    Debug::log(TRACE, "ColorManagement primaries {},{} {},{} {},{} {},{}", colorimetry.red.x, colorimetry.red.y, colorimetry.green.x, colorimetry.green.y, colorimetry.blue.x,
-               colorimetry.blue.y, colorimetry.white.x, colorimetry.white.y);
-    Debug::log(TRACE, "ColorManagement max avg {}, min {}, max {}", edid.hdrMetadata->desiredMaxFrameAverageLuminance, edid.hdrMetadata->desiredContentMinLuminance,
-               edid.hdrMetadata->desiredContentMaxLuminance);
-    return hdr_output_metadata{
-        .metadata_type = 0,
-        .hdmi_metadata_type1 =
-            hdr_metadata_infoframe{
-                .eotf          = eotf,
-                .metadata_type = 0,
-                .display_primaries =
-                    {
-                        {.x = to16Bit(colorimetry.red.x), .y = to16Bit(colorimetry.red.y)},
-                        {.x = to16Bit(colorimetry.green.x), .y = to16Bit(colorimetry.green.y)},
-                        {.x = to16Bit(colorimetry.blue.x), .y = to16Bit(colorimetry.blue.y)},
-                    },
-                .white_point                     = {.x = to16Bit(colorimetry.white.x), .y = to16Bit(colorimetry.white.y)},
-                .max_display_mastering_luminance = toNits(edid.hdrMetadata->desiredMaxFrameAverageLuminance),
-                .min_display_mastering_luminance = toNits(edid.hdrMetadata->desiredContentMinLuminance * 10000),
-                .max_cll                         = toNits(edid.hdrMetadata->desiredMaxFrameAverageLuminance),
-                .max_fall                        = toNits(edid.hdrMetadata->desiredMaxFrameAverageLuminance),
-            },
-    };
-}
-
-static hdr_output_metadata createHDRMetadata(SImageDescription settings, Aquamarine::IOutput::SParsedEDID edid) {
-    if (settings.transferFunction != XX_COLOR_MANAGER_V4_TRANSFER_FUNCTION_ST2084_PQ)
-        return hdr_output_metadata{.hdmi_metadata_type1 = hdr_metadata_infoframe{.eotf = 0}}; // empty metadata for SDR
+static hdr_output_metadata       createHDRMetadata(SImageDescription settings, Aquamarine::IOutput::SParsedEDID edid) {
+    uint8_t eotf = 0;
+    switch (settings.transferFunction) {
+        case CM_TRANSFER_FUNCTION_SRGB: eotf = 0; break; // used to send primaries and luminances to AQ. ignored for now
+        case CM_TRANSFER_FUNCTION_ST2084_PQ: eotf = 2; break;
+        // case CM_TRANSFER_FUNCTION_HLG: eotf = 3; break; TODO check display capabilities first
+        default: return NO_HDR_METADATA; // empty metadata for SDR
+    }
 
     const auto toNits  = [](uint32_t value) { return uint16_t(std::round(value)); };
-    const auto to16Bit = [](uint32_t value) { return uint16_t(std::round(value * 50000)); };
+    const auto to16Bit = [](float value) { return uint16_t(std::round(value * 50000)); };
 
-    auto       colorimetry = settings.primaries;
+    auto       colorimetry = settings.primariesNameSet || settings.primaries == SPCPRimaries{} ? getPrimaries(settings.primariesNamed) : settings.primaries;
     auto       luminances  = settings.masteringLuminances.max > 0 ?
-               settings.masteringLuminances :
-               SImageDescription::SPCMasteringLuminances{.min = edid.hdrMetadata->desiredContentMinLuminance, .max = edid.hdrMetadata->desiredContentMaxLuminance};
+                     settings.masteringLuminances :
+                     SImageDescription::SPCMasteringLuminances{.min = edid.hdrMetadata->desiredContentMinLuminance, .max = edid.hdrMetadata->desiredContentMaxLuminance};
 
     Debug::log(TRACE, "ColorManagement primaries {},{} {},{} {},{} {},{}", colorimetry.red.x, colorimetry.red.y, colorimetry.green.x, colorimetry.green.y, colorimetry.blue.x,
-               colorimetry.blue.y, colorimetry.white.x, colorimetry.white.y);
+                     colorimetry.blue.y, colorimetry.white.x, colorimetry.white.y);
     Debug::log(TRACE, "ColorManagement min {}, max {}, cll {}, fall {}", luminances.min, luminances.max, settings.maxCLL, settings.maxFALL);
     return hdr_output_metadata{
-        .metadata_type = 0,
-        .hdmi_metadata_type1 =
+              .metadata_type = 0,
+              .hdmi_metadata_type1 =
             hdr_metadata_infoframe{
-                .eotf          = 2,
-                .metadata_type = 0,
-                .display_primaries =
-                    {
+                      .eotf          = eotf,
+                      .metadata_type = 0,
+                      .display_primaries =
+                          {
                         {.x = to16Bit(colorimetry.red.x), .y = to16Bit(colorimetry.red.y)},
                         {.x = to16Bit(colorimetry.green.x), .y = to16Bit(colorimetry.green.y)},
                         {.x = to16Bit(colorimetry.blue.x), .y = to16Bit(colorimetry.blue.y)},
                     },
-                .white_point                     = {.x = to16Bit(colorimetry.white.x), .y = to16Bit(colorimetry.white.y)},
-                .max_display_mastering_luminance = toNits(luminances.max),
-                .min_display_mastering_luminance = toNits(luminances.min * 10000),
-                .max_cll                         = toNits(settings.maxCLL),
-                .max_fall                        = toNits(settings.maxFALL),
+                      .white_point                     = {.x = to16Bit(colorimetry.white.x), .y = to16Bit(colorimetry.white.y)},
+                      .max_display_mastering_luminance = toNits(luminances.max),
+                      .min_display_mastering_luminance = toNits(luminances.min * 10000),
+                      .max_cll                         = toNits(settings.maxCLL),
+                      .max_fall                        = toNits(settings.maxFALL),
             },
     };
 }
 
 bool CHyprRenderer::commitPendingAndDoExplicitSync(PHLMONITOR pMonitor) {
-    // apply timelines for explicit sync
-    // save inFD otherwise reset will reset it
-    CFileDescriptor inFD{pMonitor->output->state->state().explicitInFence};
-    pMonitor->output->state->resetExplicitFences();
-    if (inFD.isValid())
-        pMonitor->output->state->setExplicitInFence(inFD.get());
-
-    static auto PHDR = CConfigValue<Hyprlang::INT>("experimental:hdr");
+    static auto PPASS = CConfigValue<Hyprlang::INT>("render:cm_fs_passthrough");
+    const bool  PHDR  = pMonitor->imageDescription.transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ;
 
     const bool  SUPPORTSPQ = pMonitor->output->parsedEDID.hdrMetadata.has_value() ? pMonitor->output->parsedEDID.hdrMetadata->supportsPQ : false;
     Debug::log(TRACE, "ColorManagement supportsBT2020 {}, supportsPQ {}", pMonitor->output->parsedEDID.supportsBT2020, SUPPORTSPQ);
+
     if (pMonitor->output->parsedEDID.supportsBT2020 && SUPPORTSPQ) {
-        if (pMonitor->activeWorkspace && pMonitor->activeWorkspace->m_bHasFullscreenWindow && pMonitor->activeWorkspace->m_efFullscreenMode == FSMODE_FULLSCREEN) {
-            const auto WINDOW = pMonitor->activeWorkspace->getFullscreenWindow();
-            const auto SURF   = WINDOW->m_pWLSurface->resource();
-            if (SURF->colorManagement.valid() && SURF->colorManagement->hasImageDescription()) {
+        // HDR metadata determined by
+        // PPASS = 0 monitor settings
+        // PPASS = 1
+        //           windowed: monitor settings
+        //           fullscreen surface: surface settings FIXME: fullscreen SDR surface passthrough - pass degamma, ctm, gamma if needed
+        // PPASS = 2
+        //           windowed: monitor settings
+        //           fullscreen SDR surface: monitor settings
+        //           fullscreen HDR surface: surface settings
+
+        bool wantHDR      = PHDR;
+        bool hdrIsHandled = false;
+        if (*PPASS && pMonitor->activeWorkspace && pMonitor->activeWorkspace->m_bHasFullscreenWindow && pMonitor->activeWorkspace->m_efFullscreenMode == FSMODE_FULLSCREEN) {
+            const auto WINDOW    = pMonitor->activeWorkspace->getFullscreenWindow();
+            const auto ROOT_SURF = WINDOW->m_pWLSurface->resource();
+            const auto SURF =
+                ROOT_SURF->findFirstPreorder([ROOT_SURF](SP<CWLSurfaceResource> surf) { return surf->colorManagement.valid() && surf->extends() == ROOT_SURF->extends(); });
+
+            wantHDR = PHDR && *PPASS == 2;
+
+            // we have a surface with image description and it's allowed by wantHDR
+            if (SURF && SURF->colorManagement.valid() && SURF->colorManagement->hasImageDescription() &&
+                (!wantHDR || SURF->colorManagement->imageDescription().transferFunction == CM_TRANSFER_FUNCTION_ST2084_PQ)) {
                 bool needsHdrMetadataUpdate = SURF->colorManagement->needsHdrMetadataUpdate() || pMonitor->m_previousFSWindow != WINDOW;
                 if (SURF->colorManagement->needsHdrMetadataUpdate())
-                    SURF->colorManagement->setHDRMetadata(createHDRMetadata(SURF->colorManagement.get()->imageDescription(), pMonitor->output->parsedEDID));
+                    SURF->colorManagement->setHDRMetadata(createHDRMetadata(SURF->colorManagement->imageDescription(), pMonitor->output->parsedEDID));
                 if (needsHdrMetadataUpdate)
                     pMonitor->output->state->setHDRMetadata(SURF->colorManagement->hdrMetadata());
-            } else if ((pMonitor->output->state->state().hdrMetadata.hdmi_metadata_type1.eotf == 2) != *PHDR)
-                pMonitor->output->state->setHDRMetadata(*PHDR ? createHDRMetadata(2, pMonitor->output->parsedEDID) : createHDRMetadata(0, pMonitor->output->parsedEDID));
+                hdrIsHandled = true;
+            }
+
             pMonitor->m_previousFSWindow = WINDOW;
-        } else {
-            if ((pMonitor->output->state->state().hdrMetadata.hdmi_metadata_type1.eotf == 2) != *PHDR)
-                pMonitor->output->state->setHDRMetadata(*PHDR ? createHDRMetadata(2, pMonitor->output->parsedEDID) : createHDRMetadata(0, pMonitor->output->parsedEDID));
+        }
+        if (!hdrIsHandled) {
+            if ((pMonitor->output->state->state().hdrMetadata.hdmi_metadata_type1.eotf == 2) != wantHDR)
+                pMonitor->output->state->setHDRMetadata(wantHDR ? createHDRMetadata(pMonitor->imageDescription, pMonitor->output->parsedEDID) : NO_HDR_METADATA);
             pMonitor->m_previousFSWindow.reset();
         }
     }
 
-    static auto PWIDE    = CConfigValue<Hyprlang::INT>("experimental:wide_color_gamut");
-    const bool  needsWCG = *PWIDE || pMonitor->output->state->state().hdrMetadata.hdmi_metadata_type1.eotf == 2;
+    const bool needsWCG = pMonitor->output->state->state().hdrMetadata.hdmi_metadata_type1.eotf == 2 || pMonitor->imageDescription.primariesNamed == CM_PRIMARIES_BT2020;
     if (pMonitor->output->state->state().wideColorGamut != needsWCG) {
         Debug::log(TRACE, "Setting wide color gamut {}", needsWCG ? "on" : "off");
         pMonitor->output->state->setWideColorGamut(needsWCG);
@@ -1509,6 +1515,12 @@ bool CHyprRenderer::commitPendingAndDoExplicitSync(PHLMONITOR pMonitor) {
         }
     }
 
+    if (pMonitor->activeWorkspace && pMonitor->activeWorkspace->m_bHasFullscreenWindow && pMonitor->activeWorkspace->m_efFullscreenMode == FSMODE_FULLSCREEN) {
+        const auto WINDOW = pMonitor->activeWorkspace->getFullscreenWindow();
+        pMonitor->output->state->setContentType(NContentType::toDRM(WINDOW->getContentType()));
+    } else
+        pMonitor->output->state->setContentType(NContentType::toDRM(CONTENT_TYPE_NONE));
+
     if (pMonitor->ctmUpdated) {
         pMonitor->ctmUpdated = false;
         pMonitor->output->state->setCTM(pMonitor->ctm);
@@ -1516,7 +1528,7 @@ bool CHyprRenderer::commitPendingAndDoExplicitSync(PHLMONITOR pMonitor) {
 
     bool ok = pMonitor->state.commit();
     if (!ok) {
-        if (inFD.isValid()) {
+        if (pMonitor->inFence.isValid()) {
             Debug::log(TRACE, "Monitor state commit failed, retrying without a fence");
             pMonitor->output->state->resetExplicitFences();
             ok = pMonitor->state.commit();
@@ -1531,27 +1543,24 @@ bool CHyprRenderer::commitPendingAndDoExplicitSync(PHLMONITOR pMonitor) {
         }
     }
 
-    auto explicitOptions = getExplicitSyncSettings();
+    auto explicitOptions = getExplicitSyncSettings(pMonitor->output);
     if (!explicitOptions.explicitEnabled)
         return ok;
 
     Debug::log(TRACE, "Explicit: {} presented", explicitPresented.size());
-    auto sync = g_pHyprOpenGL->createEGLSync({});
 
-    if (!sync)
-        Debug::log(TRACE, "Explicit: can't add sync, EGLSync failed");
+    if (!pMonitor->eglSync)
+        Debug::log(TRACE, "Explicit: can't add sync, monitor has no EGLSync");
     else {
         for (auto const& e : explicitPresented) {
-            if (!e->current.buffer || !e->current.buffer->releaser)
+            if (!e->current.buffer || !e->current.buffer->buffer->syncReleaser)
                 continue;
 
-            e->current.buffer->releaser->addReleaseSync(sync);
+            e->current.buffer->buffer->syncReleaser->addReleaseSync(pMonitor->eglSync);
         }
     }
 
     explicitPresented.clear();
-
-    pMonitor->output->state->resetExplicitFences();
 
     return ok;
 }
@@ -2242,8 +2251,6 @@ void CHyprRenderer::endRender() {
     const auto  PMONITOR           = g_pHyprOpenGL->m_RenderData.pMonitor;
     static auto PNVIDIAANTIFLICKER = CConfigValue<Hyprlang::INT>("opengl:nvidia_anti_flicker");
 
-    PMONITOR->commitSeq++;
-
     g_pHyprOpenGL->m_RenderData.damage = m_sRenderPass.render(g_pHyprOpenGL->m_RenderData.damage);
 
     auto cleanup = CScopeGuard([this]() {
@@ -2264,37 +2271,39 @@ void CHyprRenderer::endRender() {
     if (m_eRenderMode == RENDER_MODE_FULL_FAKE)
         return;
 
-    if (m_eRenderMode == RENDER_MODE_NORMAL) {
+    if (m_eRenderMode == RENDER_MODE_NORMAL)
         PMONITOR->output->state->setBuffer(m_pCurrentBuffer);
 
-        auto explicitOptions = getExplicitSyncSettings();
+    auto explicitOptions = getExplicitSyncSettings(PMONITOR->output);
 
-        if (PMONITOR->inTimeline && explicitOptions.explicitEnabled && explicitOptions.explicitKMSEnabled) {
-            auto sync = g_pHyprOpenGL->createEGLSync({});
-            if (!sync) {
-                Debug::log(ERR, "renderer: couldn't create an EGLSync for out in endRender");
-                return;
-            }
+    if (PMONITOR->inTimeline && explicitOptions.explicitEnabled) {
+        PMONITOR->eglSync = g_pHyprOpenGL->createEGLSync();
+        if (!PMONITOR->eglSync) {
+            Debug::log(ERR, "renderer: couldn't create an EGLSync for out in endRender");
+            return;
+        }
 
-            bool ok = PMONITOR->inTimeline->importFromSyncFileFD(PMONITOR->commitSeq, sync->fd());
-            if (!ok) {
-                Debug::log(ERR, "renderer: couldn't import from sync file fd in endRender");
-                return;
-            }
+        PMONITOR->inTimelinePoint++;
+        bool ok = PMONITOR->inTimeline->importFromSyncFileFD(PMONITOR->inTimelinePoint, PMONITOR->eglSync->fd());
+        if (!ok) {
+            Debug::log(ERR, "renderer: couldn't import from sync file fd in endRender");
+            return;
+        }
 
-            auto fd = PMONITOR->inTimeline->exportAsSyncFileFD(PMONITOR->commitSeq);
-            if (!fd.isValid()) {
+        if (m_eRenderMode == RENDER_MODE_NORMAL && explicitOptions.explicitKMSEnabled) {
+            PMONITOR->inFence = CFileDescriptor{PMONITOR->inTimeline->exportAsSyncFileFD(PMONITOR->inTimelinePoint)};
+            if (!PMONITOR->inFence.isValid()) {
                 Debug::log(ERR, "renderer: couldn't export from sync timeline in endRender");
                 return;
             }
 
-            PMONITOR->output->state->setExplicitInFence(fd.take());
-        } else {
-            if (isNvidia() && *PNVIDIAANTIFLICKER)
-                glFinish();
-            else
-                glFlush();
+            PMONITOR->output->state->setExplicitInFence(PMONITOR->inFence.get());
         }
+    } else {
+        if (isNvidia() && *PNVIDIAANTIFLICKER)
+            glFinish();
+        else
+            glFlush();
     }
 }
 
@@ -2310,13 +2319,20 @@ bool CHyprRenderer::isNvidia() {
     return m_bNvidia;
 }
 
-SExplicitSyncSettings CHyprRenderer::getExplicitSyncSettings() {
+SExplicitSyncSettings CHyprRenderer::getExplicitSyncSettings(SP<Aquamarine::IOutput> output) {
     static auto           PENABLEEXPLICIT    = CConfigValue<Hyprlang::INT>("render:explicit_sync");
     static auto           PENABLEEXPLICITKMS = CConfigValue<Hyprlang::INT>("render:explicit_sync_kms");
 
     SExplicitSyncSettings settings;
     settings.explicitEnabled    = *PENABLEEXPLICIT;
     settings.explicitKMSEnabled = *PENABLEEXPLICITKMS;
+
+    if (!output->supportsExplicit) {
+        settings.explicitEnabled    = false;
+        settings.explicitKMSEnabled = false;
+
+        return settings;
+    }
 
     if (*PENABLEEXPLICIT == 2 /* auto */)
         settings.explicitEnabled = true;

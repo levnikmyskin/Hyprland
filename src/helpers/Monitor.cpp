@@ -2,6 +2,7 @@
 #include "MiscFunctions.hpp"
 #include "../macros.hpp"
 #include "math/Math.hpp"
+#include "../protocols/ColorManagement.hpp"
 #include "sync/SyncReleaser.hpp"
 #include "../Compositor.hpp"
 #include "../config/ConfigValue.hpp"
@@ -33,6 +34,7 @@
 using namespace Hyprutils::String;
 using namespace Hyprutils::Utils;
 using namespace Hyprutils::OS;
+using enum NContentType::eContentType;
 
 static int ratHandler(void* data) {
     g_pHyprRenderer->renderMonitor(((CMonitor*)data)->self.lock());
@@ -55,8 +57,7 @@ void CMonitor::onConnect(bool noRule) {
     g_pEventLoopManager->doLater([] { g_pConfigManager->ensurePersistentWorkspacesPresent(); });
 
     if (output->supportsExplicit) {
-        inTimeline  = CSyncTimeline::create(output->getBackend()->drmFD());
-        outTimeline = CSyncTimeline::create(output->getBackend()->drmFD());
+        inTimeline = CSyncTimeline::create(output->getBackend()->drmFD());
     }
 
     listeners.frame  = output->events.frame.registerListener([this](std::any d) { onMonitorFrame(); });
@@ -411,7 +412,8 @@ bool CMonitor::applyMonitorRule(SMonitorRule* pMonitorRule, bool force) {
     if (!force && DELTALESSTHAN(vecPixelSize.x, RULE->resolution.x, 1) && DELTALESSTHAN(vecPixelSize.y, RULE->resolution.y, 1) &&
         DELTALESSTHAN(refreshRate, RULE->refreshRate, 1) && setScale == RULE->scale &&
         ((DELTALESSTHAN(vecPosition.x, RULE->offset.x, 1) && DELTALESSTHAN(vecPosition.y, RULE->offset.y, 1)) || RULE->offset == Vector2D(-INT32_MAX, -INT32_MAX)) &&
-        transform == RULE->transform && RULE->enable10bit == enabled10bit && !std::memcmp(&customDrmMode, &RULE->drmMode, sizeof(customDrmMode))) {
+        transform == RULE->transform && RULE->enable10bit == enabled10bit && RULE->cmType == cmType && RULE->sdrSaturation == sdrSaturation &&
+        RULE->sdrBrightness == sdrBrightness && !std::memcmp(&customDrmMode, &RULE->drmMode, sizeof(customDrmMode))) {
 
         Debug::log(LOG, "Not applying a new rule to {} because it's already applied!", szName);
 
@@ -435,7 +437,7 @@ bool CMonitor::applyMonitorRule(SMonitorRule* pMonitorRule, bool force) {
 
     // accumulate requested modes in reverse order (cause inesrting at front is inefficient)
     std::vector<SP<Aquamarine::SOutputMode>> requestedModes;
-    std::string                              requestedStr = "preferred";
+    std::string                              requestedStr = "unknown";
 
     // use sortFunc, add best 3 to requestedModes in reverse, since we test in reverse
     auto addBest3Modes = [&](auto const& sortFunc) {
@@ -446,13 +448,24 @@ bool CMonitor::applyMonitorRule(SMonitorRule* pMonitorRule, bool force) {
         requestedModes.insert(requestedModes.end(), sortedModes.rbegin(), sortedModes.rend());
     };
 
-    // last fallback is preferred mode, btw this covers resolution == Vector2D()
+    // last fallback is always preferred mode
     if (!output->preferredMode())
         Debug::log(ERR, "Monitor {} has NO PREFERRED MODE", output->name);
     else
         requestedModes.push_back(output->preferredMode());
 
-    if (RULE->resolution == Vector2D(-1, -1)) {
+    if (RULE->resolution == Vector2D()) {
+        requestedStr = "preferred";
+
+        // fallback to first 3 modes if preferred fails/doesn't exist
+        requestedModes = output->modes;
+        if (requestedModes.size() > 3)
+            requestedModes.erase(requestedModes.begin() + 3, requestedModes.end());
+        std::ranges::reverse(requestedModes.begin(), requestedModes.end());
+
+        if (output->preferredMode())
+            requestedModes.push_back(output->preferredMode());
+    } else if (RULE->resolution == Vector2D(-1, -1)) {
         requestedStr = "highrr";
 
         // sort prioritizing refresh rate 1st and resolution 2nd, then add best 3
@@ -658,6 +671,66 @@ bool CMonitor::applyMonitorRule(SMonitorRule* pMonitorRule, bool force) {
 
     enabled10bit = set10bit;
 
+    auto oldImageDescription = imageDescription;
+    cmType                   = RULE->cmType;
+    switch (cmType) {
+        case CM_AUTO: cmType = enabled10bit && output->parsedEDID.supportsBT2020 ? CM_WIDE : CM_SRGB; break;
+        case CM_EDID: cmType = output->parsedEDID.chromaticityCoords.has_value() ? CM_EDID : CM_SRGB; break;
+        case CM_HDR:
+        case CM_HDR_EDID:
+            cmType = output->parsedEDID.supportsBT2020 && output->parsedEDID.hdrMetadata.has_value() && output->parsedEDID.hdrMetadata->supportsPQ ? cmType : CM_SRGB;
+            break;
+        default: break;
+    }
+    switch (cmType) {
+        case CM_SRGB: imageDescription = {}; break; // assumes SImageDescirption defaults to sRGB
+        case CM_WIDE:
+            imageDescription = {.primariesNameSet = true,
+                                .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
+                                .primaries        = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020)};
+            break;
+        case CM_EDID:
+            imageDescription = {.primariesNameSet = false,
+                                .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
+                                .primaries        = {
+                                           .red   = {.x = output->parsedEDID.chromaticityCoords->red.x, .y = output->parsedEDID.chromaticityCoords->red.y},
+                                           .green = {.x = output->parsedEDID.chromaticityCoords->green.x, .y = output->parsedEDID.chromaticityCoords->green.y},
+                                           .blue  = {.x = output->parsedEDID.chromaticityCoords->blue.x, .y = output->parsedEDID.chromaticityCoords->blue.y},
+                                           .white = {.x = output->parsedEDID.chromaticityCoords->white.x, .y = output->parsedEDID.chromaticityCoords->white.y},
+                                }};
+            break;
+        case CM_HDR:
+            imageDescription = {.transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
+                                .primariesNameSet = true,
+                                .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
+                                .primaries        = NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020),
+                                .luminances       = {.min = 0, .max = 10000, .reference = 203}};
+            break;
+        case CM_HDR_EDID:
+            imageDescription = {.transferFunction = NColorManagement::CM_TRANSFER_FUNCTION_ST2084_PQ,
+                                .primariesNameSet = false,
+                                .primariesNamed   = NColorManagement::CM_PRIMARIES_BT2020,
+                                .primaries        = output->parsedEDID.chromaticityCoords.has_value() ?
+                                           NColorManagement::SPCPRimaries{
+                                               .red   = {.x = output->parsedEDID.chromaticityCoords->red.x, .y = output->parsedEDID.chromaticityCoords->red.y},
+                                               .green = {.x = output->parsedEDID.chromaticityCoords->green.x, .y = output->parsedEDID.chromaticityCoords->green.y},
+                                               .blue  = {.x = output->parsedEDID.chromaticityCoords->blue.x, .y = output->parsedEDID.chromaticityCoords->blue.y},
+                                               .white = {.x = output->parsedEDID.chromaticityCoords->white.x, .y = output->parsedEDID.chromaticityCoords->white.y},
+                                    } :
+                                           NColorManagement::getPrimaries(NColorManagement::CM_PRIMARIES_BT2020),
+                                .luminances       = {.min       = output->parsedEDID.hdrMetadata->desiredContentMinLuminance,
+                                                     .max       = output->parsedEDID.hdrMetadata->desiredContentMaxLuminance,
+                                                     .reference = output->parsedEDID.hdrMetadata->desiredMaxFrameAverageLuminance}};
+
+            break;
+        default: UNREACHABLE();
+    }
+    if (oldImageDescription != imageDescription)
+        PROTO::colorManagement->onMonitorImageDescriptionChanged(self);
+
+    sdrSaturation = RULE->sdrSaturation;
+    sdrBrightness = RULE->sdrBrightness;
+
     Vector2D logicalSize = vecPixelSize / scale;
     if (!*PDISABLESCALECHECKS && (logicalSize.x != std::round(logicalSize.x) || logicalSize.y != std::round(logicalSize.y))) {
         // invalid scale, will produce fractional pixels.
@@ -788,8 +861,8 @@ bool CMonitor::shouldSkipScheduleFrameOnMouseEvent() {
     static auto PMINRR   = CConfigValue<Hyprlang::INT>("cursor:min_refresh_rate");
 
     // skip scheduling extra frames for fullsreen apps with vrr
-    bool shouldSkip =
-        *PNOBREAK && output->state->state().adaptiveSync && activeWorkspace && activeWorkspace->m_bHasFullscreenWindow && activeWorkspace->m_efFullscreenMode == FSMODE_FULLSCREEN;
+    const bool shouldSkip = activeWorkspace && activeWorkspace->m_bHasFullscreenWindow && activeWorkspace->m_efFullscreenMode == FSMODE_FULLSCREEN &&
+        (*PNOBREAK == 1 || (*PNOBREAK == 2 && activeWorkspace->getFullscreenWindow()->getContentType() == CONTENT_TYPE_GAME)) && output->state->state().adaptiveSync;
 
     // keep requested minimum refresh rate
     if (shouldSkip && *PMINRR && lastPresentationTimer.getMillis() > 1000.0f / *PMINRR) {
@@ -1007,15 +1080,17 @@ void CMonitor::changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal, bo
     if (pWorkspace == activeWorkspace)
         return;
 
-    const auto POLDWORKSPACE  = activeWorkspace;
-    POLDWORKSPACE->m_bVisible = false;
-    pWorkspace->m_bVisible    = true;
+    const auto POLDWORKSPACE = activeWorkspace;
+    if (POLDWORKSPACE)
+        POLDWORKSPACE->m_bVisible = false;
+    pWorkspace->m_bVisible = true;
 
     activeWorkspace = pWorkspace;
 
     if (!internal) {
-        const auto ANIMTOLEFT = pWorkspace->m_iID > POLDWORKSPACE->m_iID;
-        POLDWORKSPACE->startAnim(false, ANIMTOLEFT);
+        const auto ANIMTOLEFT = POLDWORKSPACE && pWorkspace->m_iID > POLDWORKSPACE->m_iID;
+        if (POLDWORKSPACE)
+            POLDWORKSPACE->startAnim(false, ANIMTOLEFT);
         pWorkspace->startAnim(true, ANIMTOLEFT);
 
         // move pinned windows
@@ -1081,6 +1156,7 @@ void CMonitor::setSpecialWorkspace(const PHLWORKSPACE& pWorkspace) {
             activeSpecialWorkspace->m_bVisible = false;
             activeSpecialWorkspace->startAnim(false, false);
             g_pEventManager->postEvent(SHyprIPCEvent{"activespecial", "," + szName});
+            g_pEventManager->postEvent(SHyprIPCEvent{"activespecialv2", ",," + szName});
         }
         activeSpecialWorkspace.reset();
 
@@ -1110,12 +1186,13 @@ void CMonitor::setSpecialWorkspace(const PHLWORKSPACE& pWorkspace) {
     bool animate = true;
     //close if open elsewhere
     const auto PMONITORWORKSPACEOWNER = pWorkspace->m_pMonitor.lock();
-    if (PMONITORWORKSPACEOWNER->activeSpecialWorkspace == pWorkspace) {
-        PMONITORWORKSPACEOWNER->activeSpecialWorkspace.reset();
-        g_pLayoutManager->getCurrentLayout()->recalculateMonitor(PMONITORWORKSPACEOWNER->ID);
-        g_pEventManager->postEvent(SHyprIPCEvent{"activespecial", "," + PMONITORWORKSPACEOWNER->szName});
+    if (const auto PMWSOWNER = pWorkspace->m_pMonitor.lock(); PMWSOWNER && PMWSOWNER->activeSpecialWorkspace == pWorkspace) {
+        PMWSOWNER->activeSpecialWorkspace.reset();
+        g_pLayoutManager->getCurrentLayout()->recalculateMonitor(PMWSOWNER->ID);
+        g_pEventManager->postEvent(SHyprIPCEvent{"activespecial", "," + PMWSOWNER->szName});
+        g_pEventManager->postEvent(SHyprIPCEvent{"activespecialv2", ",," + PMWSOWNER->szName});
 
-        const auto PACTIVEWORKSPACE = PMONITORWORKSPACEOWNER->activeWorkspace;
+        const auto PACTIVEWORKSPACE = PMWSOWNER->activeWorkspace;
         g_pCompositor->updateFullscreenFadeOnWorkspace(PACTIVEWORKSPACE);
 
         animate = false;
@@ -1162,6 +1239,7 @@ void CMonitor::setSpecialWorkspace(const PHLWORKSPACE& pWorkspace) {
     }
 
     g_pEventManager->postEvent(SHyprIPCEvent{"activespecial", pWorkspace->m_szName + "," + szName});
+    g_pEventManager->postEvent(SHyprIPCEvent{"activespecialv2", std::to_string(pWorkspace->m_iID) + "," + pWorkspace->m_szName + "," + szName});
 
     g_pHyprRenderer->damageMonitor(self.lock());
 
@@ -1263,22 +1341,42 @@ bool CMonitor::attemptDirectScanout() {
 
     const auto PSURFACE = g_pXWaylandManager->getWindowSurface(PCANDIDATE);
 
-    if (!PSURFACE || !PSURFACE->current.buffer || PSURFACE->current.bufferSize != vecPixelSize || PSURFACE->current.transform != transform)
+    if (!PSURFACE || !PSURFACE->current.texture || !PSURFACE->current.buffer)
+        return false;
+
+    if (PSURFACE->current.bufferSize != vecPixelSize || PSURFACE->current.transform != transform)
         return false;
 
     // we can't scanout shm buffers.
-    if (!PSURFACE->current.buffer || !PSURFACE->current.buffer->buffer || !PSURFACE->current.texture || !PSURFACE->current.texture->m_pEglImage /* dmabuf */)
+    const auto params = PSURFACE->current.buffer->buffer->dmabuf();
+    if (!params.success || !PSURFACE->current.texture->m_pEglImage /* dmabuf */)
         return false;
 
-    Debug::log(TRACE, "attemptDirectScanout: surface {:x} passed, will attempt", (uintptr_t)PSURFACE.get());
+    Debug::log(TRACE, "attemptDirectScanout: surface {:x} passed, will attempt, buffer {}", (uintptr_t)PSURFACE.get(), (uintptr_t)PSURFACE->current.buffer->buffer.get());
+
+    auto PBUFFER = PSURFACE->current.buffer->buffer;
+
+    if (PBUFFER == output->state->state().buffer) {
+        if (scanoutNeedsCursorUpdate) {
+            if (!state.test()) {
+                Debug::log(TRACE, "attemptDirectScanout: failed basic test");
+                return false;
+            }
+
+            if (!output->commit()) {
+                Debug::log(TRACE, "attemptDirectScanout: failed to commit cursor update");
+                lastScanout.reset();
+                return false;
+            }
+
+            scanoutNeedsCursorUpdate = false;
+        }
+
+        return true;
+    }
 
     // FIXME: make sure the buffer actually follows the available scanout dmabuf formats
     // and comes from the appropriate device. This may implode on multi-gpu!!
-
-    const auto params = PSURFACE->current.buffer->buffer->dmabuf();
-    // scanout buffer isn't dmabuf, so no scanout
-    if (!params.success)
-        return false;
 
     // entering into scanout, so save monitor format
     if (lastScanout.expired())
@@ -1289,7 +1387,7 @@ bool CMonitor::attemptDirectScanout() {
         drmFormat = params.format;
     }
 
-    output->state->setBuffer(PSURFACE->current.buffer->buffer.lock());
+    output->state->setBuffer(PBUFFER);
     output->state->setPresentationMode(tearingState.activelyTearing ? Aquamarine::eOutputPresentationMode::AQ_OUTPUT_PRESENTATION_IMMEDIATE :
                                                                       Aquamarine::eOutputPresentationMode::AQ_OUTPUT_PRESENTATION_VSYNC);
 
@@ -1298,30 +1396,28 @@ bool CMonitor::attemptDirectScanout() {
         return false;
     }
 
-    auto explicitOptions = g_pHyprRenderer->getExplicitSyncSettings();
-
-    // wait for the explicit fence if present, and if kms explicit is allowed
-    bool DOEXPLICIT = PSURFACE->syncobj && PSURFACE->syncobj->current.acquireTimeline && PSURFACE->syncobj->current.acquireTimeline->timeline && explicitOptions.explicitKMSEnabled;
-    CFileDescriptor explicitWaitFD;
-    if (DOEXPLICIT) {
-        explicitWaitFD = PSURFACE->syncobj->current.acquireTimeline->timeline->exportAsSyncFileFD(PSURFACE->syncobj->current.acquirePoint);
-        if (!explicitWaitFD.isValid())
-            Debug::log(TRACE, "attemptDirectScanout: failed to acquire an explicit wait fd");
-    }
-    DOEXPLICIT = DOEXPLICIT && explicitWaitFD.isValid();
-
-    auto     cleanup = CScopeGuard([this]() { output->state->resetExplicitFences(); });
-
     timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     PSURFACE->presentFeedback(&now, self.lock());
 
-    output->state->addDamage(CBox{{}, vecPixelSize});
+    output->state->addDamage(PSURFACE->current.accumulateBufferDamage());
     output->state->resetExplicitFences();
 
+    auto cleanup = CScopeGuard([this]() { output->state->resetExplicitFences(); });
+
+    auto explicitOptions = g_pHyprRenderer->getExplicitSyncSettings(output);
+
+    bool DOEXPLICIT = PSURFACE->syncobj && PSURFACE->current.buffer && PSURFACE->current.buffer->acquire && explicitOptions.explicitKMSEnabled;
     if (DOEXPLICIT) {
-        Debug::log(TRACE, "attemptDirectScanout: setting IN_FENCE for aq to {}", explicitWaitFD.get());
-        output->state->setExplicitInFence(explicitWaitFD.get());
+        // wait for surface's explicit fence if present
+        inFence = PSURFACE->current.buffer->acquire->exportAsFD();
+        if (inFence.isValid()) {
+            Debug::log(TRACE, "attemptDirectScanout: setting IN_FENCE for aq to {}", inFence.get());
+            output->state->setExplicitInFence(inFence.get());
+        } else {
+            Debug::log(TRACE, "attemptDirectScanout: failed to acquire an sync file fd for aq IN_FENCE");
+            DOEXPLICIT = false;
+        }
     }
 
     bool ok = output->commit();
@@ -1333,28 +1429,26 @@ bool CMonitor::attemptDirectScanout() {
         ok = output->commit();
     }
 
-    if (ok) {
-        if (lastScanout.expired()) {
-            lastScanout = PCANDIDATE;
-            Debug::log(LOG, "Entered a direct scanout to {:x}: \"{}\"", (uintptr_t)PCANDIDATE.get(), PCANDIDATE->m_szTitle);
-        }
-
-        // delay explicit sync feedback until kms release of the buffer
-        if (DOEXPLICIT) {
-            Debug::log(TRACE, "attemptDirectScanout: Delaying explicit sync release feedback until kms release");
-            PSURFACE->current.buffer->releaser->drop();
-
-            PSURFACE->current.buffer->buffer->hlEvents.backendRelease2 = PSURFACE->current.buffer->buffer->events.backendRelease.registerListener([PSURFACE](std::any d) {
-                const bool DOEXPLICIT = PSURFACE->syncobj && PSURFACE->syncobj->current.releaseTimeline && PSURFACE->syncobj->current.releaseTimeline->timeline;
-                if (DOEXPLICIT)
-                    PSURFACE->syncobj->current.releaseTimeline->timeline->signal(PSURFACE->syncobj->current.releasePoint);
-            });
-        }
-    } else {
+    if (!ok) {
         Debug::log(TRACE, "attemptDirectScanout: failed to scanout surface");
         lastScanout.reset();
         return false;
     }
+
+    if (lastScanout.expired()) {
+        lastScanout = PCANDIDATE;
+        Debug::log(LOG, "Entered a direct scanout to {:x}: \"{}\"", (uintptr_t)PCANDIDATE.get(), PCANDIDATE->m_szTitle);
+    }
+
+    scanoutNeedsCursorUpdate = false;
+
+    if (!PBUFFER->lockedByBackend || PBUFFER->hlEvents.backendRelease)
+        return true;
+
+    // lock buffer while DRM/KMS is using it, then release it when page flip happens since DRM/KMS should be done by then
+    // btw buffer's syncReleaser will take care of signaling release point, so we don't do that here
+    PBUFFER->lock();
+    PBUFFER->onBackendRelease([PBUFFER]() { PBUFFER->unlock(); });
 
     return true;
 }
@@ -1425,6 +1519,24 @@ void CMonitor::onMonitorFrame() {
             wl_event_source_timer_update(renderTimer, TIMETOSLEEP);
     } else
         g_pHyprRenderer->renderMonitor(self.lock());
+}
+
+void CMonitor::onCursorMovedOnMonitor() {
+    if (!tearingState.activelyTearing || !solitaryClient || !g_pHyprRenderer->shouldRenderCursor())
+        return;
+
+    // submit a frame immediately. This will only update the cursor pos.
+    // output->state->setBuffer(output->state->state().buffer);
+    // output->state->addDamage(CRegion{});
+    // output->state->setPresentationMode(Aquamarine::eOutputPresentationMode::AQ_OUTPUT_PRESENTATION_IMMEDIATE);
+    // if (!output->commit())
+    //     Debug::log(ERR, "onCursorMovedOnMonitor: tearing and wanted to update cursor, failed.");
+
+    // FIXME: try to do the above. We currently can't just render because drm is a fucking bitch
+    // and throws a "nO pRoP cAn Be ChAnGeD dUrInG AsYnC fLiP" on crtc_x
+    // this will throw too but fix it if we use sw cursors
+
+    tearingState.frameScheduledWhileBusy = true;
 }
 
 CMonitorState::CMonitorState(CMonitor* owner) : m_pOwner(owner) {

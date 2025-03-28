@@ -3,6 +3,7 @@
 #include "../../defines.hpp"
 #include "../../render/Texture.hpp"
 #include "./WLBuffer.hpp"
+#include "../DRMSyncobj.hpp"
 
 #include <aquamarine/buffer/Buffer.hpp>
 
@@ -21,11 +22,12 @@ class IHLBuffer : public Aquamarine::IBuffer {
     virtual void                          unlock();
     virtual bool                          locked();
 
-    void                                  unlockOnBufferRelease(WP<CWLSurfaceResource> surf /* optional */);
+    void                                  onBackendRelease(const std::function<void()>& fn);
 
     SP<CTexture>                          texture;
     bool                                  opaque = false;
     SP<CWLBufferResource>                 resource;
+    UP<CSyncReleaser>                     syncReleaser;
 
     struct {
         CHyprSignalListener backendRelease;
@@ -43,8 +45,9 @@ class CHLBufferReference {
     CHLBufferReference(SP<IHLBuffer> buffer, SP<CWLSurfaceResource> surface);
     ~CHLBufferReference();
 
-    WP<IHLBuffer>     buffer;
-    SP<CSyncReleaser> releaser;
+    SP<IHLBuffer>          buffer;
+    UP<CDRMSyncPointState> acquire;
+    UP<CDRMSyncPointState> release;
 
   private:
     WP<CWLSurfaceResource> surface;

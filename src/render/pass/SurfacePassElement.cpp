@@ -18,6 +18,7 @@ CSurfacePassElement::CSurfacePassElement(const CSurfacePassElement::SRenderData&
 
 void CSurfacePassElement::draw(const CRegion& damage) {
     g_pHyprOpenGL->m_RenderData.currentWindow      = data.pWindow;
+    g_pHyprOpenGL->m_RenderData.surface            = data.surface;
     g_pHyprOpenGL->m_RenderData.currentLS          = data.pLS;
     g_pHyprOpenGL->m_RenderData.clipBox            = data.clipBox;
     g_pHyprOpenGL->m_RenderData.discardMode        = data.discardMode;
@@ -36,6 +37,7 @@ void CSurfacePassElement::draw(const CRegion& damage) {
         g_pHyprOpenGL->m_RenderData.useNearestNeighbor          = false;
         g_pHyprOpenGL->m_bEndFrame                              = false;
         g_pHyprOpenGL->m_RenderData.currentWindow.reset();
+        g_pHyprOpenGL->m_RenderData.surface.reset();
         g_pHyprOpenGL->m_RenderData.currentLS.reset();
     }};
 
@@ -48,14 +50,6 @@ void CSurfacePassElement::draw(const CRegion& damage) {
     // uploading to the GPU.
     if (!TEXTURE->m_iTexID)
         return;
-
-    // explicit sync: wait for the timeline, if any
-    if (data.surface->syncobj && data.surface->syncobj->current.acquireTimeline) {
-        if (!g_pHyprOpenGL->waitForTimelinePoint(data.surface->syncobj->current.acquireTimeline->timeline, data.surface->syncobj->current.acquirePoint)) {
-            Debug::log(ERR, "Renderer: failed to wait for explicit timeline");
-            return;
-        }
-    }
 
     const auto INTERACTIVERESIZEINPROGRESS = data.pWindow && g_pInputManager->currentlyDraggedWindow && g_pInputManager->dragMode == MBIND_RESIZE;
     TRACY_GPU_ZONE("RenderSurface");

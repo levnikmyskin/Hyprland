@@ -156,9 +156,7 @@ void CXCursorManager::loadTheme(std::string const& name, int size, float scale) 
         cursors.emplace_back(cursor);
     }
 
-    static auto SYNCGSETTINGS = CConfigValue<Hyprlang::INT>("cursor:sync_gsettings_theme");
-    if (*SYNCGSETTINGS)
-        syncGsettings();
+    syncGsettings();
 }
 
 SP<SXCursors> CXCursorManager::getShape(std::string const& shape, int size, float scale) {
@@ -482,7 +480,7 @@ std::vector<SP<SXCursors>> CXCursorManager::loadStandardCursors(std::string cons
 
     // load the default xcursor shapes that exist in the theme
     for (size_t i = 0; i < XCURSOR_STANDARD_NAMES.size(); ++i) {
-        std::string shape{XCURSOR_STANDARD_NAMES.at(i)};
+        std::string shape{XCURSOR_STANDARD_NAMES[i]};
         auto        xImages = XcursorShapeLoadImages(i << 1 /* wtf xcursor? */, name.c_str(), size);
 
         if (!xImages) {
@@ -560,6 +558,10 @@ std::vector<SP<SXCursors>> CXCursorManager::loadAllFromDir(std::string const& pa
 }
 
 void CXCursorManager::syncGsettings() {
+    static auto SYNCGSETTINGS = CConfigValue<Hyprlang::INT>("cursor:sync_gsettings_theme");
+    if (!*SYNCGSETTINGS)
+        return;
+
     auto checkParamExists = [](std::string const& paramName, std::string const& category) {
         auto* gSettingsSchemaSource = g_settings_schema_source_get_default();
 

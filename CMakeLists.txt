@@ -77,6 +77,7 @@ add_compile_definitions(HYPRLAND_VERSION="${HYPRLAND_VERSION}")
 include_directories(. "src/" "protocols/")
 
 set(CMAKE_CXX_STANDARD 26)
+set(CXX_STANDARD_REQUIRED ON)
 add_compile_options(
   -Wall
   -Wextra
@@ -101,13 +102,21 @@ else()
 endif()
 find_package(OpenGL REQUIRED COMPONENTS ${GLES_VERSION})
 
-pkg_check_modules(aquamarine_dep REQUIRED IMPORTED_TARGET aquamarine>=0.4.5)
+pkg_check_modules(aquamarine_dep REQUIRED IMPORTED_TARGET aquamarine>=0.8.0)
 pkg_check_modules(hyprlang_dep REQUIRED IMPORTED_TARGET hyprlang>=0.3.2)
 pkg_check_modules(hyprcursor_dep REQUIRED IMPORTED_TARGET hyprcursor>=0.1.7)
-pkg_check_modules(hyprutils_dep REQUIRED IMPORTED_TARGET hyprutils>=0.4.0)
+pkg_check_modules(hyprutils_dep REQUIRED IMPORTED_TARGET hyprutils>=0.5.1)
 pkg_check_modules(hyprgraphics_dep REQUIRED IMPORTED_TARGET hyprgraphics>=0.1.1)
 
+string(REPLACE "." ";" AQ_VERSION_LIST ${aquamarine_dep_VERSION})
+list(GET AQ_VERSION_LIST 0 AQ_VERSION_MAJOR)
+list(GET AQ_VERSION_LIST 1 AQ_VERSION_MINOR)
+list(GET AQ_VERSION_LIST 2 AQ_VERSION_PATCH)
+
 add_compile_definitions(AQUAMARINE_VERSION="${aquamarine_dep_VERSION}")
+add_compile_definitions(AQUAMARINE_VERSION_MAJOR=${AQ_VERSION_MAJOR})
+add_compile_definitions(AQUAMARINE_VERSION_MINOR=${AQ_VERSION_MINOR})
+add_compile_definitions(AQUAMARINE_VERSION_PATCH=${AQ_VERSION_PATCH})
 add_compile_definitions(HYPRLANG_VERSION="${hyprlang_dep_VERSION}")
 add_compile_definitions(HYPRUTILS_VERSION="${hyprutils_dep_VERSION}")
 add_compile_definitions(HYPRCURSOR_VERSION="${hyprcursor_dep_VERSION}")
@@ -120,7 +129,7 @@ pkg_check_modules(
   xkbcommon
   uuid
   wayland-server>=1.22.90
-  wayland-protocols
+  wayland-protocols>=1.41
   cairo
   pango
   pangocairo
@@ -304,7 +313,7 @@ endfunction()
 
 target_link_libraries(Hyprland OpenGL::EGL OpenGL::GL Threads::Threads)
 
-pkg_check_modules(hyprland_protocols_dep hyprland-protocols>=0.6.0)
+pkg_check_modules(hyprland_protocols_dep hyprland-protocols>=0.6.2)
 if(hyprland_protocols_dep_FOUND)
   pkg_get_variable(HYPRLAND_PROTOCOLS hyprland-protocols pkgdatadir)
   message(STATUS "hyprland-protocols dependency set to ${HYPRLAND_PROTOCOLS}")
@@ -368,6 +377,8 @@ protocolnew("staging/linux-drm-syncobj" "linux-drm-syncobj-v1" false)
 protocolnew("staging/xdg-dialog" "xdg-dialog-v1" false)
 protocolnew("staging/single-pixel-buffer" "single-pixel-buffer-v1" false)
 protocolnew("staging/security-context" "security-context-v1" false)
+protocolnew("staging/content-type" "content-type-v1" false)
+protocolnew("staging/color-management" "color-management-v1" false)
 
 protocolwayland()
 
@@ -433,4 +444,5 @@ install(
   DIRECTORY ${HEADERS_SRC}
   DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hyprland
   FILES_MATCHING
-  PATTERN "*.h*")
+  PATTERN "*.h*"
+  PATTERN "*.frag")

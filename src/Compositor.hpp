@@ -1,15 +1,12 @@
 #pragma once
 
-#include <list>
 #include <sys/resource.h>
 
-#include "defines.hpp"
 #include "managers/XWaylandManager.hpp"
 #include "managers/KeybindManager.hpp"
 #include "managers/SessionLockManager.hpp"
 #include "desktop/Window.hpp"
 #include "protocols/types/ColorManagement.hpp"
-#include "helpers/memory/Memory.hpp"
 
 #include <aquamarine/backend/Backend.hpp>
 #include <aquamarine/output/Output.hpp>
@@ -28,8 +25,8 @@ class CCompositor {
     CCompositor(bool onlyConfig = false);
     ~CCompositor();
 
-    wl_display*                                m_sWLDisplay;
-    wl_event_loop*                             m_sWLEventLoop;
+    wl_display*                                m_sWLDisplay   = nullptr;
+    wl_event_loop*                             m_sWLEventLoop = nullptr;
     int                                        m_iDRMFD       = -1;
     bool                                       m_bInitialized = false;
     SP<Aquamarine::CBackend>                   m_pAqBackend;
@@ -55,8 +52,6 @@ class CCompositor {
     void                                       startCompositor();
     void                                       stopCompositor();
     void                                       cleanup();
-    void                                       createLockFile();
-    void                                       removeLockFile();
     void                                       bumpNofile();
     void                                       restoreNofile();
 
@@ -86,7 +81,7 @@ class CCompositor {
     PHLMONITOR             getMonitorFromCursor();
     PHLMONITOR             getMonitorFromVector(const Vector2D&);
     void                   removeWindowFromVectorSafe(PHLWINDOW);
-    void                   focusWindow(PHLWINDOW, SP<CWLSurfaceResource> pSurface = nullptr);
+    void                   focusWindow(PHLWINDOW, SP<CWLSurfaceResource> pSurface = nullptr, bool preserveFocusHistory = false);
     void                   focusSurface(SP<CWLSurfaceResource>, PHLWINDOW pWindowOwner = nullptr);
     bool                   monitorExists(PHLMONITOR);
     PHLWINDOW              vectorToWindowUnified(const Vector2D&, uint8_t properties, PHLWINDOW pIgnoreWindow = nullptr);
@@ -108,8 +103,8 @@ class CCompositor {
     void                   cleanupFadingOut(const MONITORID& monid);
     PHLWINDOW              getWindowInDirection(PHLWINDOW, char);
     PHLWINDOW              getWindowInDirection(const CBox& box, PHLWORKSPACE pWorkspace, char dir, PHLWINDOW ignoreWindow = nullptr, bool useVectorAngles = false);
-    PHLWINDOW              getNextWindowOnWorkspace(PHLWINDOW, bool focusableOnly = false, std::optional<bool> floating = {}, bool visible = false);
-    PHLWINDOW              getPrevWindowOnWorkspace(PHLWINDOW, bool focusableOnly = false, std::optional<bool> floating = {}, bool visible = false);
+    PHLWINDOW              getWindowCycle(PHLWINDOW cur, bool focusableOnly = false, std::optional<bool> floating = std::nullopt, bool visible = false, bool prev = false);
+    PHLWINDOW              getWindowCycleHist(PHLWINDOWREF cur, bool focusableOnly = false, std::optional<bool> floating = std::nullopt, bool visible = false, bool next = false);
     WORKSPACEID            getNextAvailableNamedWorkspace();
     bool                   isPointOnAnyMonitor(const Vector2D&);
     bool                   isPointOnReservedArea(const Vector2D& point, const PHLMONITOR monitor = nullptr);
@@ -152,12 +147,12 @@ class CCompositor {
     void                   setPreferredTransformForSurface(SP<CWLSurfaceResource> pSurface, wl_output_transform transform);
     void                   updateSuspendedStates();
     void                   onNewMonitor(SP<Aquamarine::IOutput> output);
-    void                   ensurePersistentWorkspacesPresent(const std::vector<SWorkspaceRule>& rules);
+    void                   ensurePersistentWorkspacesPresent(const std::vector<SWorkspaceRule>& rules, PHLWORKSPACE pWorkspace = nullptr);
 
-    SImageDescription      getPreferredImageDescription();
-    bool                   shouldChangePreferredImageDescription();
+    NColorManagement::SImageDescription getPreferredImageDescription();
+    bool                                shouldChangePreferredImageDescription();
 
-    std::string            explicitConfigPath;
+    std::string                         explicitConfigPath;
 
   private:
     void             initAllSignals();
@@ -166,11 +161,13 @@ class CCompositor {
     void             setRandomSplash();
     void             initManagers(eManagersInitStage stage);
     void             prepareFallbackOutput();
-    bool             isWindowAvailableForCycle(PHLWINDOW pWindow, PHLWINDOW w, bool focusableOnly, std::optional<bool> floating, bool anyWorkspace = false);
+    void             createLockFile();
+    void             removeLockFile();
+    void             setMallocThreshold();
 
     uint64_t         m_iHyprlandPID    = 0;
     wl_event_source* m_critSigSource   = nullptr;
-    rlimit           m_sOriginalNofile = {0};
+    rlimit           m_sOriginalNofile = {};
 };
 
 inline UP<CCompositor> g_pCompositor;

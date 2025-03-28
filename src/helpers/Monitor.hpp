@@ -12,6 +12,7 @@
 #include "Timer.hpp"
 #include "math/Math.hpp"
 #include <optional>
+#include "../protocols/types/ColorManagement.hpp"
 #include "signal/Signal.hpp"
 #include "DamageRing.hpp"
 #include <aquamarine/output/Output.hpp>
@@ -27,23 +28,36 @@ enum eAutoDirs : uint8_t {
     DIR_AUTO_RIGHT
 };
 
+enum eCMType : uint8_t {
+    CM_AUTO = 0, // subject to change. srgb for 8bpc, wide for 10bpc if supported
+    CM_SRGB,     // default, sRGB primaries
+    CM_WIDE,     // wide color gamut, BT2020 primaries
+    CM_EDID,     // primaries from edid (known to be inaccurate)
+    CM_HDR,      // wide color gamut and HDR PQ transfer function
+    CM_HDR_EDID, // same as CM_HDR with edid primaries
+};
+
 struct SMonitorRule {
-    eAutoDirs           autoDir     = DIR_AUTO_NONE;
-    std::string         name        = "";
-    Vector2D            resolution  = Vector2D(1280, 720);
-    Vector2D            offset      = Vector2D(0, 0);
-    float               scale       = 1;
-    float               refreshRate = 60; // Hz
-    bool                disabled    = false;
-    wl_output_transform transform   = WL_OUTPUT_TRANSFORM_NORMAL;
-    std::string         mirrorOf    = "";
-    bool                enable10bit = false;
-    drmModeModeInfo     drmMode     = {};
+    eAutoDirs           autoDir       = DIR_AUTO_NONE;
+    std::string         name          = "";
+    Vector2D            resolution    = Vector2D(1280, 720);
+    Vector2D            offset        = Vector2D(0, 0);
+    float               scale         = 1;
+    float               refreshRate   = 60; // Hz
+    bool                disabled      = false;
+    wl_output_transform transform     = WL_OUTPUT_TRANSFORM_NORMAL;
+    std::string         mirrorOf      = "";
+    bool                enable10bit   = false;
+    eCMType             cmType        = CM_SRGB;
+    float               sdrSaturation = 1.0f; // SDR -> HDR
+    float               sdrBrightness = 1.0f; // SDR -> HDR
+    drmModeModeInfo     drmMode       = {};
     std::optional<int>  vrr;
 };
 
 class CMonitor;
 class CSyncTimeline;
+class CEGLSync;
 
 class CMonitorState {
   public:
@@ -107,6 +121,9 @@ class CMonitor {
     bool                        dpmsStatus       = true;
     bool                        vrrActive        = false; // this can be TRUE even if VRR is not active in the case that this display does not support it.
     bool                        enabled10bit     = false; // as above, this can be TRUE even if 10 bit failed.
+    eCMType                     cmType           = CM_SRGB;
+    float                       sdrSaturation    = 1.0f;
+    float                       sdrBrightness    = 1.0f;
     bool                        createdByUser    = false;
     bool                        isUnsafeFallback = false;
 
@@ -122,11 +139,12 @@ class CMonitor {
     SMonitorRule                activeMonitorRule;
 
     // explicit sync
-    SP<CSyncTimeline> inTimeline;
-    SP<CSyncTimeline> outTimeline;
-    uint64_t          commitSeq = 0;
+    SP<CSyncTimeline>              inTimeline;
+    Hyprutils::OS::CFileDescriptor inFence;
+    SP<CEGLSync>                   eglSync;
+    uint64_t                       inTimelinePoint = 0;
 
-    PHLMONITORREF     self;
+    PHLMONITORREF                  self;
 
     // mirroring
     PHLMONITORREF              pMirrorOf;
@@ -141,6 +159,7 @@ class CMonitor {
 
     // for direct scanout
     PHLWINDOWREF lastScanout;
+    bool         scanoutNeedsCursorUpdate = false;
 
     struct {
         bool canTear         = false;
@@ -162,37 +181,39 @@ class CMonitor {
     std::array<std::vector<PHLLSREF>, 4> m_aLayerSurfaceLayers;
 
     // methods
-    void        onConnect(bool noRule);
-    void        onDisconnect(bool destroy = false);
-    bool        applyMonitorRule(SMonitorRule* pMonitorRule, bool force = false);
-    void        addDamage(const pixman_region32_t* rg);
-    void        addDamage(const CRegion& rg);
-    void        addDamage(const CBox& box);
-    bool        shouldSkipScheduleFrameOnMouseEvent();
-    void        setMirror(const std::string&);
-    bool        isMirror();
-    bool        matchesStaticSelector(const std::string& selector) const;
-    float       getDefaultScale();
-    void        changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal = false, bool noMouseMove = false, bool noFocus = false);
-    void        changeWorkspace(const WORKSPACEID& id, bool internal = false, bool noMouseMove = false, bool noFocus = false);
-    void        setSpecialWorkspace(const PHLWORKSPACE& pWorkspace);
-    void        setSpecialWorkspace(const WORKSPACEID& id);
-    void        moveTo(const Vector2D& pos);
-    Vector2D    middle();
-    void        updateMatrix();
-    WORKSPACEID activeWorkspaceID();
-    WORKSPACEID activeSpecialWorkspaceID();
-    CBox        logicalBox();
-    void        scheduleDone();
-    bool        attemptDirectScanout();
-    void        setCTM(const Mat3x3& ctm);
+    void                                onConnect(bool noRule);
+    void                                onDisconnect(bool destroy = false);
+    bool                                applyMonitorRule(SMonitorRule* pMonitorRule, bool force = false);
+    void                                addDamage(const pixman_region32_t* rg);
+    void                                addDamage(const CRegion& rg);
+    void                                addDamage(const CBox& box);
+    bool                                shouldSkipScheduleFrameOnMouseEvent();
+    void                                setMirror(const std::string&);
+    bool                                isMirror();
+    bool                                matchesStaticSelector(const std::string& selector) const;
+    float                               getDefaultScale();
+    void                                changeWorkspace(const PHLWORKSPACE& pWorkspace, bool internal = false, bool noMouseMove = false, bool noFocus = false);
+    void                                changeWorkspace(const WORKSPACEID& id, bool internal = false, bool noMouseMove = false, bool noFocus = false);
+    void                                setSpecialWorkspace(const PHLWORKSPACE& pWorkspace);
+    void                                setSpecialWorkspace(const WORKSPACEID& id);
+    void                                moveTo(const Vector2D& pos);
+    Vector2D                            middle();
+    void                                updateMatrix();
+    WORKSPACEID                         activeWorkspaceID();
+    WORKSPACEID                         activeSpecialWorkspaceID();
+    CBox                                logicalBox();
+    void                                scheduleDone();
+    bool                                attemptDirectScanout();
+    void                                setCTM(const Mat3x3& ctm);
+    void                                onCursorMovedOnMonitor();
 
-    void        debugLastPresentation(const std::string& message);
-    void        onMonitorFrame();
+    void                                debugLastPresentation(const std::string& message);
+    void                                onMonitorFrame();
 
-    bool        m_bEnabled             = false;
-    bool        m_bRenderingInitPassed = false;
-    WP<CWindow> m_previousFSWindow;
+    bool                                m_bEnabled             = false;
+    bool                                m_bRenderingInitPassed = false;
+    WP<CWindow>                         m_previousFSWindow;
+    NColorManagement::SImageDescription imageDescription;
 
     // For the list lookup
 

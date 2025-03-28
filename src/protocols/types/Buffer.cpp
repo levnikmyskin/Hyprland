@@ -18,17 +18,24 @@ void IHLBuffer::unlock() {
 
     ASSERT(nLocks >= 0);
 
-    if (nLocks == 0)
+    if (nLocks == 0) {
         sendRelease();
+        syncReleaser.reset();
+    }
 }
 
 bool IHLBuffer::locked() {
     return nLocks > 0;
 }
 
-void IHLBuffer::unlockOnBufferRelease(WP<CWLSurfaceResource> surf) {
-    hlEvents.backendRelease = events.backendRelease.registerListener([this](std::any data) {
-        unlock();
+void IHLBuffer::onBackendRelease(const std::function<void()>& fn) {
+    if (hlEvents.backendRelease) {
+        hlEvents.backendRelease->emit(nullptr);
+        Debug::log(LOG, "backendRelease emitted early");
+    }
+
+    hlEvents.backendRelease = events.backendRelease.registerListener([this, fn](std::any) {
+        fn();
         hlEvents.backendRelease.reset();
     });
 }
@@ -38,7 +45,7 @@ CHLBufferReference::CHLBufferReference(SP<IHLBuffer> buffer_, SP<CWLSurfaceResou
 }
 
 CHLBufferReference::~CHLBufferReference() {
-    if (buffer.expired())
+    if (!buffer)
         return;
 
     buffer->unlock();

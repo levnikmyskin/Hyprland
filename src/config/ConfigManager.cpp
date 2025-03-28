@@ -25,7 +25,8 @@
 #include "../debug/HyprNotificationOverlay.hpp"
 #include "../plugins/PluginSystem.hpp"
 
-#include "managers/HookSystemManager.hpp"
+#include "../managers/HookSystemManager.hpp"
+#include "../protocols/types/ContentType.hpp"
 #include <cstddef>
 #include <cstdint>
 #include <hyprutils/path/Path.hpp>
@@ -48,6 +49,7 @@
 #include <memory>
 using namespace Hyprutils::String;
 using namespace Hyprutils::Animation;
+using enum NContentType::eContentType;
 
 //NOLINTNEXTLINE
 extern "C" char** environ;
@@ -292,7 +294,7 @@ static Hyprlang::CParseResult handleWindowRuleV2(const char* c, const char* v) {
     const std::string      VALUE   = v;
     const std::string      COMMAND = c;
 
-    const auto             RESULT = g_pConfigManager->handleWindowRuleV2(COMMAND, VALUE);
+    const auto             RESULT = g_pConfigManager->handleWindowRule(COMMAND, VALUE);
 
     Hyprlang::CParseResult result;
     if (RESULT.has_value())
@@ -372,299 +374,333 @@ static Hyprlang::CParseResult handlePlugin(const char* c, const char* v) {
     return result;
 }
 
+void CConfigManager::registerConfigVar(const char* name, const Hyprlang::INT& val) {
+    m_configValueNumber++;
+    m_pConfig->addConfigValue(name, val);
+}
+
+void CConfigManager::registerConfigVar(const char* name, const Hyprlang::FLOAT& val) {
+    m_configValueNumber++;
+    m_pConfig->addConfigValue(name, val);
+}
+
+void CConfigManager::registerConfigVar(const char* name, const Hyprlang::VEC2& val) {
+    m_configValueNumber++;
+    m_pConfig->addConfigValue(name, val);
+}
+
+void CConfigManager::registerConfigVar(const char* name, const Hyprlang::STRING& val) {
+    m_configValueNumber++;
+    m_pConfig->addConfigValue(name, val);
+}
+
+void CConfigManager::registerConfigVar(const char* name, Hyprlang::CUSTOMTYPE&& val) {
+    m_configValueNumber++;
+    m_pConfig->addConfigValue(name, std::move(val));
+}
+
 CConfigManager::CConfigManager() {
     const auto ERR = verifyConfigExists();
 
     m_configPaths.emplace_back(getMainConfigPath());
     m_pConfig = makeUnique<Hyprlang::CConfig>(m_configPaths.begin()->c_str(), Hyprlang::SConfigOptions{.throwAllErrors = true, .allowMissingConfig = true});
 
-    m_pConfig->addConfigValue("general:border_size", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("general:no_border_on_floating", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("general:border_part_of_window", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("general:gaps_in", Hyprlang::CConfigCustomValueType{configHandleGapSet, configHandleGapDestroy, "5"});
-    m_pConfig->addConfigValue("general:gaps_out", Hyprlang::CConfigCustomValueType{configHandleGapSet, configHandleGapDestroy, "20"});
-    m_pConfig->addConfigValue("general:gaps_workspaces", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("general:no_focus_fallback", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("general:resize_on_border", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("general:extend_border_grab_area", Hyprlang::INT{15});
-    m_pConfig->addConfigValue("general:hover_icon_on_border", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("general:layout", {"dwindle"});
-    m_pConfig->addConfigValue("general:allow_tearing", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("general:resize_corner", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("general:snap:enabled", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("general:snap:window_gap", Hyprlang::INT{10});
-    m_pConfig->addConfigValue("general:snap:monitor_gap", Hyprlang::INT{10});
-    m_pConfig->addConfigValue("general:snap:border_overlap", Hyprlang::INT{0});
+    registerConfigVar("general:border_size", Hyprlang::INT{1});
+    registerConfigVar("general:no_border_on_floating", Hyprlang::INT{0});
+    registerConfigVar("general:gaps_in", Hyprlang::CConfigCustomValueType{configHandleGapSet, configHandleGapDestroy, "5"});
+    registerConfigVar("general:gaps_out", Hyprlang::CConfigCustomValueType{configHandleGapSet, configHandleGapDestroy, "20"});
+    registerConfigVar("general:gaps_workspaces", Hyprlang::INT{0});
+    registerConfigVar("general:no_focus_fallback", Hyprlang::INT{0});
+    registerConfigVar("general:resize_on_border", Hyprlang::INT{0});
+    registerConfigVar("general:extend_border_grab_area", Hyprlang::INT{15});
+    registerConfigVar("general:hover_icon_on_border", Hyprlang::INT{1});
+    registerConfigVar("general:layout", {"dwindle"});
+    registerConfigVar("general:allow_tearing", Hyprlang::INT{0});
+    registerConfigVar("general:resize_corner", Hyprlang::INT{0});
+    registerConfigVar("general:snap:enabled", Hyprlang::INT{0});
+    registerConfigVar("general:snap:window_gap", Hyprlang::INT{10});
+    registerConfigVar("general:snap:monitor_gap", Hyprlang::INT{10});
+    registerConfigVar("general:snap:border_overlap", Hyprlang::INT{0});
+    registerConfigVar("general:col.active_border", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0xffffffff"});
+    registerConfigVar("general:col.inactive_border", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0xff444444"});
+    registerConfigVar("general:col.nogroup_border", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0xffffaaff"});
+    registerConfigVar("general:col.nogroup_border_active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0xffff00ff"});
 
-    m_pConfig->addConfigValue("misc:disable_hyprland_logo", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:disable_splash_rendering", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:col.splash", Hyprlang::INT{0x55ffffff});
-    m_pConfig->addConfigValue("misc:splash_font_family", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("misc:font_family", {"Sans"});
-    m_pConfig->addConfigValue("misc:force_default_wallpaper", Hyprlang::INT{-1});
-    m_pConfig->addConfigValue("misc:vfr", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("misc:vrr", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:mouse_move_enables_dpms", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:key_press_enables_dpms", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:always_follow_on_dnd", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("misc:layers_hog_keyboard_focus", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("misc:animate_manual_resizes", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:animate_mouse_windowdragging", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:disable_autoreload", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:enable_swallow", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:swallow_regex", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("misc:swallow_exception_regex", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("misc:focus_on_activate", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:mouse_move_focuses_monitor", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("misc:render_ahead_of_time", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:render_ahead_safezone", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("misc:allow_session_lock_restore", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:close_special_on_empty", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("misc:background_color", Hyprlang::INT{0xff111111});
-    m_pConfig->addConfigValue("misc:new_window_takes_over_fullscreen", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:exit_window_retains_fullscreen", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:initial_workspace_tracking", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("misc:middle_click_paste", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("misc:render_unfocused_fps", Hyprlang::INT{15});
-    m_pConfig->addConfigValue("misc:disable_xdg_env_checks", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:disable_hyprland_qtutils_check", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("misc:lockdead_screen_delay", Hyprlang::INT{1000});
+    registerConfigVar("misc:disable_hyprland_logo", Hyprlang::INT{0});
+    registerConfigVar("misc:disable_splash_rendering", Hyprlang::INT{0});
+    registerConfigVar("misc:col.splash", Hyprlang::INT{0x55ffffff});
+    registerConfigVar("misc:splash_font_family", {STRVAL_EMPTY});
+    registerConfigVar("misc:font_family", {"Sans"});
+    registerConfigVar("misc:force_default_wallpaper", Hyprlang::INT{-1});
+    registerConfigVar("misc:vfr", Hyprlang::INT{1});
+    registerConfigVar("misc:vrr", Hyprlang::INT{0});
+    registerConfigVar("misc:mouse_move_enables_dpms", Hyprlang::INT{0});
+    registerConfigVar("misc:key_press_enables_dpms", Hyprlang::INT{0});
+    registerConfigVar("misc:always_follow_on_dnd", Hyprlang::INT{1});
+    registerConfigVar("misc:layers_hog_keyboard_focus", Hyprlang::INT{1});
+    registerConfigVar("misc:animate_manual_resizes", Hyprlang::INT{0});
+    registerConfigVar("misc:animate_mouse_windowdragging", Hyprlang::INT{0});
+    registerConfigVar("misc:disable_autoreload", Hyprlang::INT{0});
+    registerConfigVar("misc:enable_swallow", Hyprlang::INT{0});
+    registerConfigVar("misc:swallow_regex", {STRVAL_EMPTY});
+    registerConfigVar("misc:swallow_exception_regex", {STRVAL_EMPTY});
+    registerConfigVar("misc:focus_on_activate", Hyprlang::INT{0});
+    registerConfigVar("misc:mouse_move_focuses_monitor", Hyprlang::INT{1});
+    registerConfigVar("misc:render_ahead_of_time", Hyprlang::INT{0});
+    registerConfigVar("misc:render_ahead_safezone", Hyprlang::INT{1});
+    registerConfigVar("misc:allow_session_lock_restore", Hyprlang::INT{0});
+    registerConfigVar("misc:close_special_on_empty", Hyprlang::INT{1});
+    registerConfigVar("misc:background_color", Hyprlang::INT{0xff111111});
+    registerConfigVar("misc:new_window_takes_over_fullscreen", Hyprlang::INT{0});
+    registerConfigVar("misc:exit_window_retains_fullscreen", Hyprlang::INT{0});
+    registerConfigVar("misc:initial_workspace_tracking", Hyprlang::INT{1});
+    registerConfigVar("misc:middle_click_paste", Hyprlang::INT{1});
+    registerConfigVar("misc:render_unfocused_fps", Hyprlang::INT{15});
+    registerConfigVar("misc:disable_xdg_env_checks", Hyprlang::INT{0});
+    registerConfigVar("misc:disable_hyprland_qtutils_check", Hyprlang::INT{0});
+    registerConfigVar("misc:lockdead_screen_delay", Hyprlang::INT{1000});
+    registerConfigVar("misc:enable_anr_dialog", Hyprlang::INT{1});
 
-    m_pConfig->addConfigValue("group:insert_after_current", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:focus_removed_window", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:merge_groups_on_drag", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:merge_groups_on_groupbar", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:merge_floated_into_tiled_on_groupbar", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("group:auto_group", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:drag_into_group", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:group_on_movetoworkspace", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("group:groupbar:enabled", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:groupbar:font_family", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("group:groupbar:font_size", Hyprlang::INT{8});
-    m_pConfig->addConfigValue("group:groupbar:gradients", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:groupbar:height", Hyprlang::INT{14});
-    m_pConfig->addConfigValue("group:groupbar:priority", Hyprlang::INT{3});
-    m_pConfig->addConfigValue("group:groupbar:render_titles", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:groupbar:scrolling", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("group:groupbar:text_color", Hyprlang::INT{0xffffffff});
-    m_pConfig->addConfigValue("group:groupbar:stacked", Hyprlang::INT{0});
+    registerConfigVar("group:insert_after_current", Hyprlang::INT{1});
+    registerConfigVar("group:focus_removed_window", Hyprlang::INT{1});
+    registerConfigVar("group:merge_groups_on_drag", Hyprlang::INT{1});
+    registerConfigVar("group:merge_groups_on_groupbar", Hyprlang::INT{1});
+    registerConfigVar("group:merge_floated_into_tiled_on_groupbar", Hyprlang::INT{0});
+    registerConfigVar("group:auto_group", Hyprlang::INT{1});
+    registerConfigVar("group:drag_into_group", Hyprlang::INT{1});
+    registerConfigVar("group:group_on_movetoworkspace", Hyprlang::INT{0});
+    registerConfigVar("group:groupbar:enabled", Hyprlang::INT{1});
+    registerConfigVar("group:groupbar:font_family", {STRVAL_EMPTY});
+    registerConfigVar("group:groupbar:font_size", Hyprlang::INT{8});
+    registerConfigVar("group:groupbar:gradients", Hyprlang::INT{0});
+    registerConfigVar("group:groupbar:height", Hyprlang::INT{14});
+    registerConfigVar("group:groupbar:indicator_height", Hyprlang::INT{3});
+    registerConfigVar("group:groupbar:priority", Hyprlang::INT{3});
+    registerConfigVar("group:groupbar:render_titles", Hyprlang::INT{1});
+    registerConfigVar("group:groupbar:scrolling", Hyprlang::INT{1});
+    registerConfigVar("group:groupbar:text_color", Hyprlang::INT{0xffffffff});
+    registerConfigVar("group:groupbar:stacked", Hyprlang::INT{0});
+    registerConfigVar("group:groupbar:rounding", Hyprlang::INT{1});
+    registerConfigVar("group:groupbar:gradient_rounding", Hyprlang::INT{2});
+    registerConfigVar("group:groupbar:round_only_edges", Hyprlang::INT{1});
+    registerConfigVar("group:groupbar:gradient_round_only_edges", Hyprlang::INT{1});
+    registerConfigVar("group:groupbar:gaps_out", Hyprlang::INT{2});
+    registerConfigVar("group:groupbar:gaps_in", Hyprlang::INT{2});
 
-    m_pConfig->addConfigValue("debug:int", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:log_damage", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:overlay", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:damage_blink", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:pass", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:disable_logs", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("debug:disable_time", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("debug:enable_stdout_logs", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:damage_tracking", {(Hyprlang::INT)DAMAGE_TRACKING_FULL});
-    m_pConfig->addConfigValue("debug:manual_crash", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:suppress_errors", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:error_limit", Hyprlang::INT{5});
-    m_pConfig->addConfigValue("debug:error_position", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:watchdog_timeout", Hyprlang::INT{5});
-    m_pConfig->addConfigValue("debug:disable_scale_checks", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("debug:colored_stdout_logs", Hyprlang::INT{1});
+    registerConfigVar("debug:log_damage", Hyprlang::INT{0});
+    registerConfigVar("debug:overlay", Hyprlang::INT{0});
+    registerConfigVar("debug:damage_blink", Hyprlang::INT{0});
+    registerConfigVar("debug:pass", Hyprlang::INT{0});
+    registerConfigVar("debug:disable_logs", Hyprlang::INT{1});
+    registerConfigVar("debug:disable_time", Hyprlang::INT{1});
+    registerConfigVar("debug:enable_stdout_logs", Hyprlang::INT{0});
+    registerConfigVar("debug:damage_tracking", {(Hyprlang::INT)DAMAGE_TRACKING_FULL});
+    registerConfigVar("debug:manual_crash", Hyprlang::INT{0});
+    registerConfigVar("debug:suppress_errors", Hyprlang::INT{0});
+    registerConfigVar("debug:error_limit", Hyprlang::INT{5});
+    registerConfigVar("debug:error_position", Hyprlang::INT{0});
+    registerConfigVar("debug:watchdog_timeout", Hyprlang::INT{5});
+    registerConfigVar("debug:disable_scale_checks", Hyprlang::INT{0});
+    registerConfigVar("debug:colored_stdout_logs", Hyprlang::INT{1});
+    registerConfigVar("debug:full_cm_proto", Hyprlang::INT{0});
 
-    m_pConfig->addConfigValue("decoration:rounding", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("decoration:rounding_power", {2.F});
-    m_pConfig->addConfigValue("decoration:blur:enabled", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("decoration:blur:size", Hyprlang::INT{8});
-    m_pConfig->addConfigValue("decoration:blur:passes", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("decoration:blur:ignore_opacity", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("decoration:blur:new_optimizations", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("decoration:blur:xray", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("decoration:blur:contrast", {0.8916F});
-    m_pConfig->addConfigValue("decoration:blur:brightness", {1.0F});
-    m_pConfig->addConfigValue("decoration:blur:vibrancy", {0.1696F});
-    m_pConfig->addConfigValue("decoration:blur:vibrancy_darkness", {0.0F});
-    m_pConfig->addConfigValue("decoration:blur:noise", {0.0117F});
-    m_pConfig->addConfigValue("decoration:blur:special", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("decoration:blur:popups", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("decoration:blur:popups_ignorealpha", {0.2F});
-    m_pConfig->addConfigValue("decoration:blur:input_methods", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("decoration:blur:input_methods_ignorealpha", {0.2F});
-    m_pConfig->addConfigValue("decoration:active_opacity", {1.F});
-    m_pConfig->addConfigValue("decoration:inactive_opacity", {1.F});
-    m_pConfig->addConfigValue("decoration:fullscreen_opacity", {1.F});
-    m_pConfig->addConfigValue("decoration:no_blur_on_oversized", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("decoration:shadow:enabled", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("decoration:shadow:range", Hyprlang::INT{4});
-    m_pConfig->addConfigValue("decoration:shadow:render_power", Hyprlang::INT{3});
-    m_pConfig->addConfigValue("decoration:shadow:ignore_window", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("decoration:shadow:offset", Hyprlang::VEC2{0, 0});
-    m_pConfig->addConfigValue("decoration:shadow:scale", {1.f});
-    m_pConfig->addConfigValue("decoration:shadow:sharp", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("decoration:shadow:color", Hyprlang::INT{0xee1a1a1a});
-    m_pConfig->addConfigValue("decoration:shadow:color_inactive", {(Hyprlang::INT)INT64_MAX});
-    m_pConfig->addConfigValue("decoration:dim_inactive", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("decoration:dim_strength", {0.5f});
-    m_pConfig->addConfigValue("decoration:dim_special", {0.2f});
-    m_pConfig->addConfigValue("decoration:dim_around", {0.4f});
-    m_pConfig->addConfigValue("decoration:screen_shader", {STRVAL_EMPTY});
+    registerConfigVar("decoration:rounding", Hyprlang::INT{0});
+    registerConfigVar("decoration:rounding_power", {2.F});
+    registerConfigVar("decoration:blur:enabled", Hyprlang::INT{1});
+    registerConfigVar("decoration:blur:size", Hyprlang::INT{8});
+    registerConfigVar("decoration:blur:passes", Hyprlang::INT{1});
+    registerConfigVar("decoration:blur:ignore_opacity", Hyprlang::INT{1});
+    registerConfigVar("decoration:blur:new_optimizations", Hyprlang::INT{1});
+    registerConfigVar("decoration:blur:xray", Hyprlang::INT{0});
+    registerConfigVar("decoration:blur:contrast", {0.8916F});
+    registerConfigVar("decoration:blur:brightness", {1.0F});
+    registerConfigVar("decoration:blur:vibrancy", {0.1696F});
+    registerConfigVar("decoration:blur:vibrancy_darkness", {0.0F});
+    registerConfigVar("decoration:blur:noise", {0.0117F});
+    registerConfigVar("decoration:blur:special", Hyprlang::INT{0});
+    registerConfigVar("decoration:blur:popups", Hyprlang::INT{0});
+    registerConfigVar("decoration:blur:popups_ignorealpha", {0.2F});
+    registerConfigVar("decoration:blur:input_methods", Hyprlang::INT{0});
+    registerConfigVar("decoration:blur:input_methods_ignorealpha", {0.2F});
+    registerConfigVar("decoration:active_opacity", {1.F});
+    registerConfigVar("decoration:inactive_opacity", {1.F});
+    registerConfigVar("decoration:fullscreen_opacity", {1.F});
+    registerConfigVar("decoration:shadow:enabled", Hyprlang::INT{1});
+    registerConfigVar("decoration:shadow:range", Hyprlang::INT{4});
+    registerConfigVar("decoration:shadow:render_power", Hyprlang::INT{3});
+    registerConfigVar("decoration:shadow:ignore_window", Hyprlang::INT{1});
+    registerConfigVar("decoration:shadow:offset", Hyprlang::VEC2{0, 0});
+    registerConfigVar("decoration:shadow:scale", {1.f});
+    registerConfigVar("decoration:shadow:sharp", Hyprlang::INT{0});
+    registerConfigVar("decoration:shadow:color", Hyprlang::INT{0xee1a1a1a});
+    registerConfigVar("decoration:shadow:color_inactive", {(Hyprlang::INT)INT64_MAX});
+    registerConfigVar("decoration:dim_inactive", Hyprlang::INT{0});
+    registerConfigVar("decoration:dim_strength", {0.5f});
+    registerConfigVar("decoration:dim_special", {0.2f});
+    registerConfigVar("decoration:dim_around", {0.4f});
+    registerConfigVar("decoration:screen_shader", {STRVAL_EMPTY});
+    registerConfigVar("decoration:border_part_of_window", Hyprlang::INT{1});
 
-    m_pConfig->addConfigValue("dwindle:pseudotile", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("dwindle:force_split", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("dwindle:permanent_direction_override", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("dwindle:preserve_split", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("dwindle:special_scale_factor", {1.f});
-    m_pConfig->addConfigValue("dwindle:split_width_multiplier", {1.0f});
-    m_pConfig->addConfigValue("dwindle:use_active_for_splits", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("dwindle:default_split_ratio", {1.f});
-    m_pConfig->addConfigValue("dwindle:split_bias", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("dwindle:smart_split", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("dwindle:smart_resizing", Hyprlang::INT{1});
+    registerConfigVar("dwindle:pseudotile", Hyprlang::INT{0});
+    registerConfigVar("dwindle:force_split", Hyprlang::INT{0});
+    registerConfigVar("dwindle:permanent_direction_override", Hyprlang::INT{0});
+    registerConfigVar("dwindle:preserve_split", Hyprlang::INT{0});
+    registerConfigVar("dwindle:special_scale_factor", {1.f});
+    registerConfigVar("dwindle:split_width_multiplier", {1.0f});
+    registerConfigVar("dwindle:use_active_for_splits", Hyprlang::INT{1});
+    registerConfigVar("dwindle:default_split_ratio", {1.f});
+    registerConfigVar("dwindle:split_bias", Hyprlang::INT{0});
+    registerConfigVar("dwindle:smart_split", Hyprlang::INT{0});
+    registerConfigVar("dwindle:smart_resizing", Hyprlang::INT{1});
 
-    m_pConfig->addConfigValue("master:special_scale_factor", {1.f});
-    m_pConfig->addConfigValue("master:mfact", {0.55f});
-    m_pConfig->addConfigValue("master:new_status", {"slave"});
-    m_pConfig->addConfigValue("master:slave_count_for_center_master", Hyprlang::INT{2});
-    m_pConfig->addConfigValue("master:center_master_slaves_on_right", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("master:center_ignores_reserved", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("master:new_on_active", {"none"});
-    m_pConfig->addConfigValue("master:new_on_top", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("master:orientation", {"left"});
-    m_pConfig->addConfigValue("master:inherit_fullscreen", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("master:allow_small_split", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("master:smart_resizing", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("master:drop_at_cursor", Hyprlang::INT{1});
+    registerConfigVar("master:special_scale_factor", {1.f});
+    registerConfigVar("master:mfact", {0.55f});
+    registerConfigVar("master:new_status", {"slave"});
+    registerConfigVar("master:slave_count_for_center_master", Hyprlang::INT{2});
+    registerConfigVar("master:center_master_slaves_on_right", Hyprlang::INT{1});
+    registerConfigVar("master:center_ignores_reserved", Hyprlang::INT{0});
+    registerConfigVar("master:new_on_active", {"none"});
+    registerConfigVar("master:new_on_top", Hyprlang::INT{0});
+    registerConfigVar("master:orientation", {"left"});
+    registerConfigVar("master:inherit_fullscreen", Hyprlang::INT{1});
+    registerConfigVar("master:allow_small_split", Hyprlang::INT{0});
+    registerConfigVar("master:smart_resizing", Hyprlang::INT{1});
+    registerConfigVar("master:drop_at_cursor", Hyprlang::INT{1});
+    registerConfigVar("master:always_keep_position", Hyprlang::INT{0});
 
-    m_pConfig->addConfigValue("animations:enabled", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("animations:first_launch_animation", Hyprlang::INT{1});
+    registerConfigVar("animations:enabled", Hyprlang::INT{1});
+    registerConfigVar("animations:first_launch_animation", Hyprlang::INT{1});
 
-    m_pConfig->addConfigValue("input:follow_mouse", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("input:focus_on_close", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:mouse_refocus", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("input:special_fallthrough", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:off_window_axis_events", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("input:sensitivity", {0.f});
-    m_pConfig->addConfigValue("input:accel_profile", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:kb_file", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:kb_layout", {"us"});
-    m_pConfig->addConfigValue("input:kb_variant", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:kb_options", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:kb_rules", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:kb_model", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:repeat_rate", Hyprlang::INT{25});
-    m_pConfig->addConfigValue("input:repeat_delay", Hyprlang::INT{600});
-    m_pConfig->addConfigValue("input:natural_scroll", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:numlock_by_default", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:resolve_binds_by_sym", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:force_no_accel", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:float_switch_override_focus", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("input:left_handed", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:scroll_method", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:scroll_button", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:scroll_button_lock", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:scroll_factor", {1.f});
-    m_pConfig->addConfigValue("input:scroll_points", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:emulate_discrete_scroll", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("input:touchpad:natural_scroll", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:touchpad:disable_while_typing", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("input:touchpad:clickfinger_behavior", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:touchpad:tap_button_map", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:touchpad:middle_button_emulation", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:touchpad:tap-to-click", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("input:touchpad:tap-and-drag", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("input:touchpad:drag_lock", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:touchpad:scroll_factor", {1.f});
-    m_pConfig->addConfigValue("input:touchdevice:transform", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:touchdevice:output", {"[[Auto]]"});
-    m_pConfig->addConfigValue("input:touchdevice:enabled", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("input:tablet:transform", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:tablet:output", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("input:tablet:region_position", Hyprlang::VEC2{0, 0});
-    m_pConfig->addConfigValue("input:tablet:absolute_region_position", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:tablet:region_size", Hyprlang::VEC2{0, 0});
-    m_pConfig->addConfigValue("input:tablet:relative_input", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:tablet:left_handed", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("input:tablet:active_area_position", Hyprlang::VEC2{0, 0});
-    m_pConfig->addConfigValue("input:tablet:active_area_size", Hyprlang::VEC2{0, 0});
+    registerConfigVar("input:follow_mouse", Hyprlang::INT{1});
+    registerConfigVar("input:follow_mouse_threshold", Hyprlang::FLOAT{0});
+    registerConfigVar("input:focus_on_close", Hyprlang::INT{0});
+    registerConfigVar("input:mouse_refocus", Hyprlang::INT{1});
+    registerConfigVar("input:special_fallthrough", Hyprlang::INT{0});
+    registerConfigVar("input:off_window_axis_events", Hyprlang::INT{1});
+    registerConfigVar("input:sensitivity", {0.f});
+    registerConfigVar("input:accel_profile", {STRVAL_EMPTY});
+    registerConfigVar("input:kb_file", {STRVAL_EMPTY});
+    registerConfigVar("input:kb_layout", {"us"});
+    registerConfigVar("input:kb_variant", {STRVAL_EMPTY});
+    registerConfigVar("input:kb_options", {STRVAL_EMPTY});
+    registerConfigVar("input:kb_rules", {STRVAL_EMPTY});
+    registerConfigVar("input:kb_model", {STRVAL_EMPTY});
+    registerConfigVar("input:repeat_rate", Hyprlang::INT{25});
+    registerConfigVar("input:repeat_delay", Hyprlang::INT{600});
+    registerConfigVar("input:natural_scroll", Hyprlang::INT{0});
+    registerConfigVar("input:numlock_by_default", Hyprlang::INT{0});
+    registerConfigVar("input:resolve_binds_by_sym", Hyprlang::INT{0});
+    registerConfigVar("input:force_no_accel", Hyprlang::INT{0});
+    registerConfigVar("input:float_switch_override_focus", Hyprlang::INT{1});
+    registerConfigVar("input:left_handed", Hyprlang::INT{0});
+    registerConfigVar("input:scroll_method", {STRVAL_EMPTY});
+    registerConfigVar("input:scroll_button", Hyprlang::INT{0});
+    registerConfigVar("input:scroll_button_lock", Hyprlang::INT{0});
+    registerConfigVar("input:scroll_factor", {1.f});
+    registerConfigVar("input:scroll_points", {STRVAL_EMPTY});
+    registerConfigVar("input:emulate_discrete_scroll", Hyprlang::INT{1});
+    registerConfigVar("input:touchpad:natural_scroll", Hyprlang::INT{0});
+    registerConfigVar("input:touchpad:disable_while_typing", Hyprlang::INT{1});
+    registerConfigVar("input:touchpad:clickfinger_behavior", Hyprlang::INT{0});
+    registerConfigVar("input:touchpad:tap_button_map", {STRVAL_EMPTY});
+    registerConfigVar("input:touchpad:middle_button_emulation", Hyprlang::INT{0});
+    registerConfigVar("input:touchpad:tap-to-click", Hyprlang::INT{1});
+    registerConfigVar("input:touchpad:tap-and-drag", Hyprlang::INT{1});
+    registerConfigVar("input:touchpad:drag_lock", Hyprlang::INT{0});
+    registerConfigVar("input:touchpad:scroll_factor", {1.f});
+    registerConfigVar("input:touchpad:flip_x", Hyprlang::INT{0});
+    registerConfigVar("input:touchpad:flip_y", Hyprlang::INT{0});
+    registerConfigVar("input:touchdevice:transform", Hyprlang::INT{-1});
+    registerConfigVar("input:touchdevice:output", {"[[Auto]]"});
+    registerConfigVar("input:touchdevice:enabled", Hyprlang::INT{1});
+    registerConfigVar("input:tablet:transform", Hyprlang::INT{0});
+    registerConfigVar("input:tablet:output", {STRVAL_EMPTY});
+    registerConfigVar("input:tablet:region_position", Hyprlang::VEC2{0, 0});
+    registerConfigVar("input:tablet:absolute_region_position", Hyprlang::INT{0});
+    registerConfigVar("input:tablet:region_size", Hyprlang::VEC2{0, 0});
+    registerConfigVar("input:tablet:relative_input", Hyprlang::INT{0});
+    registerConfigVar("input:tablet:left_handed", Hyprlang::INT{0});
+    registerConfigVar("input:tablet:active_area_position", Hyprlang::VEC2{0, 0});
+    registerConfigVar("input:tablet:active_area_size", Hyprlang::VEC2{0, 0});
 
-    m_pConfig->addConfigValue("binds:pass_mouse_when_bound", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("binds:scroll_event_delay", Hyprlang::INT{300});
-    m_pConfig->addConfigValue("binds:workspace_back_and_forth", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("binds:allow_workspace_cycles", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("binds:workspace_center_on", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("binds:focus_preferred_method", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("binds:ignore_group_lock", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("binds:movefocus_cycles_fullscreen", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("binds:movefocus_cycles_groupfirst", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("binds:disable_keybind_grabbing", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("binds:window_direction_monitor_fallback", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("binds:allow_pin_fullscreen", Hyprlang::INT{0});
+    registerConfigVar("binds:pass_mouse_when_bound", Hyprlang::INT{0});
+    registerConfigVar("binds:scroll_event_delay", Hyprlang::INT{300});
+    registerConfigVar("binds:workspace_back_and_forth", Hyprlang::INT{0});
+    registerConfigVar("binds:allow_workspace_cycles", Hyprlang::INT{0});
+    registerConfigVar("binds:workspace_center_on", Hyprlang::INT{1});
+    registerConfigVar("binds:focus_preferred_method", Hyprlang::INT{0});
+    registerConfigVar("binds:ignore_group_lock", Hyprlang::INT{0});
+    registerConfigVar("binds:movefocus_cycles_fullscreen", Hyprlang::INT{0});
+    registerConfigVar("binds:movefocus_cycles_groupfirst", Hyprlang::INT{0});
+    registerConfigVar("binds:disable_keybind_grabbing", Hyprlang::INT{0});
+    registerConfigVar("binds:window_direction_monitor_fallback", Hyprlang::INT{1});
+    registerConfigVar("binds:allow_pin_fullscreen", Hyprlang::INT{0});
 
-    m_pConfig->addConfigValue("gestures:workspace_swipe", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_fingers", Hyprlang::INT{3});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_min_fingers", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_distance", Hyprlang::INT{300});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_invert", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_min_speed_to_force", Hyprlang::INT{30});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_cancel_ratio", {0.5f});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_create_new", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_direction_lock", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_direction_lock_threshold", Hyprlang::INT{10});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_forever", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_use_r", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_touch", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("gestures:workspace_swipe_touch_invert", Hyprlang::INT{0});
+    registerConfigVar("gestures:workspace_swipe", Hyprlang::INT{0});
+    registerConfigVar("gestures:workspace_swipe_fingers", Hyprlang::INT{3});
+    registerConfigVar("gestures:workspace_swipe_min_fingers", Hyprlang::INT{0});
+    registerConfigVar("gestures:workspace_swipe_distance", Hyprlang::INT{300});
+    registerConfigVar("gestures:workspace_swipe_invert", Hyprlang::INT{1});
+    registerConfigVar("gestures:workspace_swipe_min_speed_to_force", Hyprlang::INT{30});
+    registerConfigVar("gestures:workspace_swipe_cancel_ratio", {0.5f});
+    registerConfigVar("gestures:workspace_swipe_create_new", Hyprlang::INT{1});
+    registerConfigVar("gestures:workspace_swipe_direction_lock", Hyprlang::INT{1});
+    registerConfigVar("gestures:workspace_swipe_direction_lock_threshold", Hyprlang::INT{10});
+    registerConfigVar("gestures:workspace_swipe_forever", Hyprlang::INT{0});
+    registerConfigVar("gestures:workspace_swipe_use_r", Hyprlang::INT{0});
+    registerConfigVar("gestures:workspace_swipe_touch", Hyprlang::INT{0});
+    registerConfigVar("gestures:workspace_swipe_touch_invert", Hyprlang::INT{0});
 
-    m_pConfig->addConfigValue("xwayland:enabled", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("xwayland:use_nearest_neighbor", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("xwayland:force_zero_scaling", Hyprlang::INT{0});
+    registerConfigVar("xwayland:enabled", Hyprlang::INT{1});
+    registerConfigVar("xwayland:use_nearest_neighbor", Hyprlang::INT{1});
+    registerConfigVar("xwayland:force_zero_scaling", Hyprlang::INT{0});
+    registerConfigVar("xwayland:create_abstract_socket", Hyprlang::INT{0});
 
-    m_pConfig->addConfigValue("opengl:nvidia_anti_flicker", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("opengl:force_introspection", Hyprlang::INT{1}); // TODO: remove this. I don't think it does us any good to disable intro.
+    registerConfigVar("opengl:nvidia_anti_flicker", Hyprlang::INT{1});
 
-    m_pConfig->addConfigValue("cursor:no_hardware_cursors", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("cursor:no_break_fs_vrr", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("cursor:min_refresh_rate", Hyprlang::INT{24});
-    m_pConfig->addConfigValue("cursor:hotspot_padding", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("cursor:inactive_timeout", {0.f});
-    m_pConfig->addConfigValue("cursor:no_warps", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("cursor:persistent_warps", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("cursor:warp_on_change_workspace", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("cursor:default_monitor", {STRVAL_EMPTY});
-    m_pConfig->addConfigValue("cursor:zoom_factor", {1.f});
-    m_pConfig->addConfigValue("cursor:zoom_rigid", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("cursor:enable_hyprcursor", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("cursor:sync_gsettings_theme", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("cursor:hide_on_key_press", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("cursor:hide_on_touch", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("cursor:use_cpu_buffer", Hyprlang::INT{2});
-    m_pConfig->addConfigValue("cursor:warp_back_after_non_mouse_input", Hyprlang::INT{0});
+    registerConfigVar("cursor:no_hardware_cursors", Hyprlang::INT{2});
+    registerConfigVar("cursor:no_break_fs_vrr", Hyprlang::INT{2});
+    registerConfigVar("cursor:min_refresh_rate", Hyprlang::INT{24});
+    registerConfigVar("cursor:hotspot_padding", Hyprlang::INT{0});
+    registerConfigVar("cursor:inactive_timeout", {0.f});
+    registerConfigVar("cursor:no_warps", Hyprlang::INT{0});
+    registerConfigVar("cursor:persistent_warps", Hyprlang::INT{0});
+    registerConfigVar("cursor:warp_on_change_workspace", Hyprlang::INT{0});
+    registerConfigVar("cursor:default_monitor", {STRVAL_EMPTY});
+    registerConfigVar("cursor:zoom_factor", {1.f});
+    registerConfigVar("cursor:zoom_rigid", Hyprlang::INT{0});
+    registerConfigVar("cursor:enable_hyprcursor", Hyprlang::INT{1});
+    registerConfigVar("cursor:sync_gsettings_theme", Hyprlang::INT{1});
+    registerConfigVar("cursor:hide_on_key_press", Hyprlang::INT{0});
+    registerConfigVar("cursor:hide_on_touch", Hyprlang::INT{1});
+    registerConfigVar("cursor:use_cpu_buffer", Hyprlang::INT{2});
+    registerConfigVar("cursor:warp_back_after_non_mouse_input", Hyprlang::INT{0});
 
-    m_pConfig->addConfigValue("autogenerated", Hyprlang::INT{0});
+    registerConfigVar("autogenerated", Hyprlang::INT{0});
 
-    m_pConfig->addConfigValue("general:col.active_border", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0xffffffff"});
-    m_pConfig->addConfigValue("general:col.inactive_border", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0xff444444"});
-    m_pConfig->addConfigValue("general:col.nogroup_border", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0xffffaaff"});
-    m_pConfig->addConfigValue("general:col.nogroup_border_active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0xffff00ff"});
+    registerConfigVar("group:col.border_active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66ffff00"});
+    registerConfigVar("group:col.border_inactive", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66777700"});
+    registerConfigVar("group:col.border_locked_active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66ff5500"});
+    registerConfigVar("group:col.border_locked_inactive", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66775500"});
 
-    m_pConfig->addConfigValue("group:col.border_active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66ffff00"});
-    m_pConfig->addConfigValue("group:col.border_inactive", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66777700"});
-    m_pConfig->addConfigValue("group:col.border_locked_active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66ff5500"});
-    m_pConfig->addConfigValue("group:col.border_locked_inactive", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66775500"});
+    registerConfigVar("group:groupbar:col.active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66ffff00"});
+    registerConfigVar("group:groupbar:col.inactive", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66777700"});
+    registerConfigVar("group:groupbar:col.locked_active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66ff5500"});
+    registerConfigVar("group:groupbar:col.locked_inactive", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66775500"});
 
-    m_pConfig->addConfigValue("group:groupbar:col.active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66ffff00"});
-    m_pConfig->addConfigValue("group:groupbar:col.inactive", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66777700"});
-    m_pConfig->addConfigValue("group:groupbar:col.locked_active", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66ff5500"});
-    m_pConfig->addConfigValue("group:groupbar:col.locked_inactive", Hyprlang::CConfigCustomValueType{&configHandleGradientSet, configHandleGradientDestroy, "0x66775500"});
+    registerConfigVar("render:explicit_sync", Hyprlang::INT{2});
+    registerConfigVar("render:explicit_sync_kms", Hyprlang::INT{2});
+    registerConfigVar("render:direct_scanout", Hyprlang::INT{0});
+    registerConfigVar("render:expand_undersized_textures", Hyprlang::INT{1});
+    registerConfigVar("render:xp_mode", Hyprlang::INT{0});
+    registerConfigVar("render:ctm_animation", Hyprlang::INT{2});
+    registerConfigVar("render:cm_fs_passthrough", Hyprlang::INT{2});
+    registerConfigVar("render:cm_enabled", Hyprlang::INT{1});
 
-    m_pConfig->addConfigValue("render:explicit_sync", Hyprlang::INT{2});
-    m_pConfig->addConfigValue("render:explicit_sync_kms", Hyprlang::INT{2});
-    m_pConfig->addConfigValue("render:direct_scanout", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("render:expand_undersized_textures", Hyprlang::INT{1});
-    m_pConfig->addConfigValue("render:xp_mode", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("render:ctm_animation", Hyprlang::INT{2});
-    m_pConfig->addConfigValue("render:allow_early_buffer_release", Hyprlang::INT{1});
+    registerConfigVar("ecosystem:no_update_news", Hyprlang::INT{0});
+    registerConfigVar("ecosystem:no_donation_nag", Hyprlang::INT{0});
 
-    m_pConfig->addConfigValue("ecosystem:no_update_news", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("ecosystem:no_donation_nag", Hyprlang::INT{0});
-
-    m_pConfig->addConfigValue("experimental:wide_color_gamut", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("experimental:hdr", Hyprlang::INT{0});
-    m_pConfig->addConfigValue("experimental:xx_color_management_v4", Hyprlang::INT{0});
+    registerConfigVar("experimental:xx_color_management_v4", Hyprlang::INT{0});
 
     // devices
     m_pConfig->addSpecialCategory("device", {"name"});
@@ -693,7 +729,7 @@ CConfigManager::CConfigManager() {
     m_pConfig->addSpecialConfigValue("device", "scroll_button", Hyprlang::INT{0});
     m_pConfig->addSpecialConfigValue("device", "scroll_button_lock", Hyprlang::INT{0});
     m_pConfig->addSpecialConfigValue("device", "scroll_points", {STRVAL_EMPTY});
-    m_pConfig->addSpecialConfigValue("device", "transform", Hyprlang::INT{0});
+    m_pConfig->addSpecialConfigValue("device", "transform", Hyprlang::INT{-1});
     m_pConfig->addSpecialConfigValue("device", "output", {STRVAL_EMPTY});
     m_pConfig->addSpecialConfigValue("device", "enabled", Hyprlang::INT{1});                  // only for mice, touchpads, and touchdevices
     m_pConfig->addSpecialConfigValue("device", "region_position", Hyprlang::VEC2{0, 0});      // only for tablets
@@ -702,6 +738,8 @@ CConfigManager::CConfigManager() {
     m_pConfig->addSpecialConfigValue("device", "relative_input", Hyprlang::INT{0});           // only for tablets
     m_pConfig->addSpecialConfigValue("device", "active_area_position", Hyprlang::VEC2{0, 0}); // only for tablets
     m_pConfig->addSpecialConfigValue("device", "active_area_size", Hyprlang::VEC2{0, 0});     // only for tablets
+    m_pConfig->addSpecialConfigValue("device", "flip_x", Hyprlang::INT{0});                   // only for touchpads
+    m_pConfig->addSpecialConfigValue("device", "flip_y", Hyprlang::INT{0});                   // only for touchpads
 
     // keywords
     m_pConfig->registerHandler(&::handleExec, "exec", {false});
@@ -730,6 +768,9 @@ CConfigManager::CConfigManager() {
     m_pConfig->commence();
 
     resetHLConfig();
+
+    if (CONFIG_OPTIONS.size() != m_configValueNumber - 1 /* autogenerated is special */)
+        Debug::log(LOG, "Warning: config descriptions have {} entries, but there are {} config values. This should fail tests!!", CONFIG_OPTIONS.size(), m_configValueNumber);
 
     if (!g_pCompositor->m_bOnlyConfigVerification) {
         Debug::log(
@@ -880,9 +921,9 @@ void CConfigManager::setDefaultAnimationVars() {
     m_AnimationTree.createNode("specialWorkspaceOut", "specialWorkspace");
 
     // init the root nodes
-    m_AnimationTree.setConfigForNode("global", 1, 8.f, "", "default");
-    m_AnimationTree.setConfigForNode("__internal_fadeCTM", 1, 5.f, "", "linear");
-    m_AnimationTree.setConfigForNode("borderangle", 0, 0.f, "", "default");
+    m_AnimationTree.setConfigForNode("global", 1, 8.f, "default");
+    m_AnimationTree.setConfigForNode("__internal_fadeCTM", 1, 5.f, "linear");
+    m_AnimationTree.setConfigForNode("borderangle", 0, 1, "default");
 }
 
 std::optional<std::string> CConfigManager::resetHLConfig() {
@@ -1343,6 +1384,14 @@ std::vector<SP<CWindowRule>> CConfigManager::getMatchingRules(PHLWINDOW pWindow,
                         continue;
                 }
 
+                if (!rule->szContentType.empty()) {
+                    try {
+                        const auto contentType = NContentType::fromString(rule->szContentType);
+                        if (pWindow->getContentType() != contentType)
+                            continue;
+                    } catch (std::exception& e) { Debug::log(ERR, "Rule \"content:{}\" failed with: {}", rule->szContentType, e.what()); }
+                }
+
                 if (!rule->szWorkspace.empty()) {
                     const auto PWORKSPACE = pWindow->m_pWorkspace;
 
@@ -1605,37 +1654,34 @@ void CConfigManager::ensureVRR(PHLMONITOR pMonitor) {
             }
             m->vrrActive = true;
             return;
-        } else if (USEVRR == 2) {
+        } else if (USEVRR == 2 || USEVRR == 3) {
             const auto PWORKSPACE = m->activeWorkspace;
 
             if (!PWORKSPACE)
                 return; // ???
 
-            const auto WORKSPACEFULL = PWORKSPACE->m_bHasFullscreenWindow && (PWORKSPACE->m_efFullscreenMode & FSMODE_FULLSCREEN);
+            bool wantVRR = PWORKSPACE->m_bHasFullscreenWindow && (PWORKSPACE->m_efFullscreenMode & FSMODE_FULLSCREEN);
+            if (wantVRR && USEVRR == 3) {
+                const auto contentType = PWORKSPACE->getFullscreenWindow()->getContentType();
+                wantVRR                = contentType == CONTENT_TYPE_GAME || contentType == CONTENT_TYPE_VIDEO;
+            }
 
-            if (WORKSPACEFULL) {
+            if (wantVRR) {
                 /* fullscreen */
                 m->vrrActive = true;
 
-                m->output->state->resetExplicitFences();
-                m->output->state->setAdaptiveSync(true);
+                if (!m->output->state->state().adaptiveSync) {
+                    m->output->state->setAdaptiveSync(true);
 
-                if (!m->state.test()) {
-                    Debug::log(LOG, "Pending output {} does not accept VRR.", m->output->name);
-                    m->output->state->setAdaptiveSync(false);
+                    if (!m->state.test()) {
+                        Debug::log(LOG, "Pending output {} does not accept VRR.", m->output->name);
+                        m->output->state->setAdaptiveSync(false);
+                    }
                 }
-
-                if (!m->state.commit())
-                    Debug::log(ERR, "Couldn't commit output {} in ensureVRR -> true", m->output->name);
-
-            } else if (!WORKSPACEFULL) {
+            } else {
                 m->vrrActive = false;
 
-                m->output->state->resetExplicitFences();
                 m->output->state->setAdaptiveSync(false);
-
-                if (!m->state.commit())
-                    Debug::log(ERR, "Couldn't commit output {} in ensureVRR -> false", m->output->name);
             }
         }
     };
@@ -1931,11 +1977,16 @@ std::optional<std::string> CConfigManager::handleMonitor(const std::string& comm
             error += "invalid resolution ";
             newrule.resolution = Vector2D();
         } else {
-            newrule.resolution.x = stoi(ARGS[1].substr(0, ARGS[1].find_first_of('x')));
-            newrule.resolution.y = stoi(ARGS[1].substr(ARGS[1].find_first_of('x') + 1, ARGS[1].find_first_of('@')));
+            try {
+                newrule.resolution.x = stoi(ARGS[1].substr(0, ARGS[1].find_first_of('x')));
+                newrule.resolution.y = stoi(ARGS[1].substr(ARGS[1].find_first_of('x') + 1, ARGS[1].find_first_of('@')));
 
-            if (ARGS[1].contains("@"))
-                newrule.refreshRate = stof(ARGS[1].substr(ARGS[1].find_first_of('@') + 1));
+                if (ARGS[1].contains("@"))
+                    newrule.refreshRate = stof(ARGS[1].substr(ARGS[1].find_first_of('@') + 1));
+            } catch (...) {
+                error += "invalid resolution ";
+                newrule.resolution = Vector2D();
+            }
         }
     }
 
@@ -1989,6 +2040,32 @@ std::optional<std::string> CConfigManager::handleMonitor(const std::string& comm
             argno++;
         } else if (ARGS[argno] == "bitdepth") {
             newrule.enable10bit = ARGS[argno + 1] == "10";
+            argno++;
+        } else if (ARGS[argno] == "cm") {
+            if (ARGS[argno + 1] == "auto")
+                newrule.cmType = CM_AUTO;
+            else if (ARGS[argno + 1] == "srgb")
+                newrule.cmType = CM_SRGB;
+            else if (ARGS[argno + 1] == "wide")
+                newrule.cmType = CM_WIDE;
+            else if (ARGS[argno + 1] == "edid")
+                newrule.cmType = CM_EDID;
+            else if (ARGS[argno + 1] == "hdr")
+                newrule.cmType = CM_HDR;
+            else if (ARGS[argno + 1] == "hdredid")
+                newrule.cmType = CM_HDR_EDID;
+            else
+                error = "invalid cm ";
+            argno++;
+        } else if (ARGS[argno] == "sdrsaturation") {
+            try {
+                newrule.sdrSaturation = stof(ARGS[argno + 1]);
+            } catch (...) { error = "invalid sdrsaturation "; }
+            argno++;
+        } else if (ARGS[argno] == "sdrbrightness") {
+            try {
+                newrule.sdrBrightness = stof(ARGS[argno + 1]);
+            } catch (...) { error = "invalid sdrbrightness "; }
             argno++;
         } else if (ARGS[argno] == "transform") {
             if (!isNumber(ARGS[argno + 1])) {
@@ -2272,69 +2349,6 @@ std::optional<std::string> CConfigManager::handleUnbind(const std::string& comma
 
 std::optional<std::string> CConfigManager::handleWindowRule(const std::string& command, const std::string& value) {
     const auto RULE  = trim(value.substr(0, value.find_first_of(',')));
-    const auto VALUE = trim(value.substr(value.find_first_of(',') + 1));
-
-    // check rule and value
-    if (RULE.empty() || VALUE.empty())
-        return "empty rule?";
-
-    if (RULE == "unset") {
-        std::erase_if(m_vWindowRules, [&](const auto& other) { return other->szValue == VALUE; });
-        return {};
-    }
-
-    auto newRule = makeShared<CWindowRule>(RULE, VALUE, false);
-
-    // verify we support a rule
-    if (newRule->ruleType == CWindowRule::RULE_INVALID) {
-        Debug::log(ERR, "Invalid rule found: {}", RULE);
-        return "Invalid rule: " + RULE;
-    }
-
-    newRule->rV1Regex = {VALUE.starts_with("title:") ? VALUE.substr(6) : VALUE};
-
-    if (RULE.starts_with("size") || RULE.starts_with("maxsize") || RULE.starts_with("minsize"))
-        m_vWindowRules.insert(m_vWindowRules.begin(), newRule);
-    else
-        m_vWindowRules.emplace_back(newRule);
-
-    return {};
-}
-
-std::optional<std::string> CConfigManager::handleLayerRule(const std::string& command, const std::string& value) {
-    const auto RULE  = trim(value.substr(0, value.find_first_of(',')));
-    const auto VALUE = trim(value.substr(value.find_first_of(',') + 1));
-
-    // check rule and value
-    if (RULE.empty() || VALUE.empty())
-        return "empty rule?";
-
-    if (RULE == "unset") {
-        std::erase_if(m_vLayerRules, [&](const auto& other) { return other->targetNamespace == VALUE; });
-        return {};
-    }
-
-    auto rule = makeShared<CLayerRule>(RULE, VALUE);
-
-    if (rule->ruleType == CLayerRule::RULE_INVALID) {
-        Debug::log(ERR, "Invalid rule found: {}", RULE);
-        return "Invalid rule found: " + RULE;
-    }
-
-    rule->targetNamespaceRegex = {VALUE};
-
-    m_vLayerRules.emplace_back(rule);
-
-    for (auto const& m : g_pCompositor->m_vMonitors)
-        for (auto const& lsl : m->m_aLayerSurfaceLayers)
-            for (auto const& ls : lsl)
-                ls->applyRules();
-
-    return {};
-}
-
-std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string& command, const std::string& value) {
-    const auto RULE  = trim(value.substr(0, value.find_first_of(',')));
     const auto VALUE = value.substr(value.find_first_of(',') + 1);
 
     auto       rule = makeShared<CWindowRule>(RULE, VALUE, true);
@@ -2357,6 +2371,7 @@ std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string&
     const auto FOCUSPOS           = VALUE.find("focus:");
     const auto FULLSCREENSTATEPOS = VALUE.find("fullscreenstate:");
     const auto ONWORKSPACEPOS     = VALUE.find("onworkspace:");
+    const auto CONTENTTYPEPOS     = VALUE.find("content:");
 
     // find workspacepos that isn't onworkspacepos
     size_t WORKSPACEPOS = std::string::npos;
@@ -2369,8 +2384,8 @@ std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string&
         currentPos = VALUE.find("workspace:", currentPos + 1);
     }
 
-    const auto checkPos = std::unordered_set{TAGPOS,        TITLEPOS,  CLASSPOS,           INITIALTITLEPOS, INITIALCLASSPOS, X11POS,        FLOATPOS,
-                                             FULLSCREENPOS, PINNEDPOS, FULLSCREENSTATEPOS, WORKSPACEPOS,    FOCUSPOS,        ONWORKSPACEPOS};
+    const auto checkPos = std::unordered_set{TAGPOS,        TITLEPOS,  CLASSPOS,           INITIALTITLEPOS, INITIALCLASSPOS, X11POS,         FLOATPOS,
+                                             FULLSCREENPOS, PINNEDPOS, FULLSCREENSTATEPOS, WORKSPACEPOS,    FOCUSPOS,        ONWORKSPACEPOS, CONTENTTYPEPOS};
     if (checkPos.size() == 1 && checkPos.contains(std::string::npos)) {
         Debug::log(ERR, "Invalid rulev2 syntax: {}", VALUE);
         return "Invalid rulev2 syntax: " + VALUE;
@@ -2407,6 +2422,8 @@ std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string&
             min = WORKSPACEPOS;
         if (FOCUSPOS > pos && FOCUSPOS < min)
             min = FOCUSPOS;
+        if (CONTENTTYPEPOS > pos && CONTENTTYPEPOS < min)
+            min = CONTENTTYPEPOS;
 
         result = result.substr(0, min - pos);
 
@@ -2465,6 +2482,9 @@ std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string&
     if (ONWORKSPACEPOS != std::string::npos)
         rule->szOnWorkspace = extract(ONWORKSPACEPOS + 12);
 
+    if (CONTENTTYPEPOS != std::string::npos)
+        rule->szContentType = extract(CONTENTTYPEPOS + 8);
+
     if (RULE == "unset") {
         std::erase_if(m_vWindowRules, [&](const auto& other) {
             if (!other->v2)
@@ -2509,6 +2529,9 @@ std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string&
                 if (!rule->szOnWorkspace.empty() && rule->szOnWorkspace != other->szOnWorkspace)
                     return false;
 
+                if (!rule->szContentType.empty() && rule->szContentType != other->szContentType)
+                    return false;
+
                 return true;
             }
         });
@@ -2519,6 +2542,38 @@ std::optional<std::string> CConfigManager::handleWindowRuleV2(const std::string&
         m_vWindowRules.insert(m_vWindowRules.begin(), rule);
     else
         m_vWindowRules.push_back(rule);
+
+    return {};
+}
+
+std::optional<std::string> CConfigManager::handleLayerRule(const std::string& command, const std::string& value) {
+    const auto RULE  = trim(value.substr(0, value.find_first_of(',')));
+    const auto VALUE = trim(value.substr(value.find_first_of(',') + 1));
+
+    // check rule and value
+    if (RULE.empty() || VALUE.empty())
+        return "empty rule?";
+
+    if (RULE == "unset") {
+        std::erase_if(m_vLayerRules, [&](const auto& other) { return other->targetNamespace == VALUE; });
+        return {};
+    }
+
+    auto rule = makeShared<CLayerRule>(RULE, VALUE);
+
+    if (rule->ruleType == CLayerRule::RULE_INVALID) {
+        Debug::log(ERR, "Invalid rule found: {}", RULE);
+        return "Invalid rule found: " + RULE;
+    }
+
+    rule->targetNamespaceRegex = {VALUE};
+
+    m_vLayerRules.emplace_back(rule);
+
+    for (auto const& m : g_pCompositor->m_vMonitors)
+        for (auto const& lsl : m->m_aLayerSurfaceLayers)
+            for (auto const& ls : lsl)
+                ls->applyRules();
 
     return {};
 }
@@ -2776,12 +2831,13 @@ const std::vector<SConfigOptionDescription>& CConfigManager::getAllDescriptions(
     return CONFIG_OPTIONS;
 }
 
-bool CConfigManager::shouldUseSoftwareCursors() {
+bool CConfigManager::shouldUseSoftwareCursors(PHLMONITOR pMonitor) {
     static auto PNOHW = CConfigValue<Hyprlang::INT>("cursor:no_hardware_cursors");
 
     switch (*PNOHW) {
         case 0: return false;
         case 1: return true;
+        case 2: return pMonitor->tearingState.activelyTearing;
         default: break;
     }
 
@@ -2791,37 +2847,87 @@ bool CConfigManager::shouldUseSoftwareCursors() {
 std::string SConfigOptionDescription::jsonify() const {
     auto parseData = [this]() -> std::string {
         return std::visit(
-            [](auto&& val) {
-                using T = std::decay_t<decltype(val)>;
-                if constexpr (std::is_same_v<T, SStringData>) {
-                    return std::format(R"#(     "value": "{}")#", val.value);
-                } else if constexpr (std::is_same_v<T, SRangeData>) {
-                    return std::format(R"#(     "value": {},
+            [this](auto&& val) {
+                const auto PTR = g_pConfigManager->m_pConfig->getConfigValuePtr(value.c_str());
+                if (!PTR) {
+                    Debug::log(ERR, "invalid SConfigOptionDescription: no config option {} exists", value);
+                    return std::string{""};
+                }
+                const char* const EXPLICIT = PTR->m_bSetByUser ? "true" : "false";
+
+                std::string       currentValue = "undefined";
+
+                const auto        CONFIGVALUE = PTR->getValue();
+
+                if (typeid(Hyprlang::INT) == std::type_index(CONFIGVALUE.type()))
+                    currentValue = std::format("{}", std::any_cast<Hyprlang::INT>(CONFIGVALUE));
+                else if (typeid(Hyprlang::FLOAT) == std::type_index(CONFIGVALUE.type()))
+                    currentValue = std::format("{:.2f}", std::any_cast<Hyprlang::FLOAT>(CONFIGVALUE));
+                else if (typeid(Hyprlang::STRING) == std::type_index(CONFIGVALUE.type()))
+                    currentValue = std::any_cast<Hyprlang::STRING>(CONFIGVALUE);
+                else if (typeid(Hyprlang::VEC2) == std::type_index(CONFIGVALUE.type())) {
+                    const auto V = std::any_cast<Hyprlang::VEC2>(CONFIGVALUE);
+                    currentValue = std::format("{}, {}", V.x, V.y);
+                } else if (typeid(void*) == std::type_index(CONFIGVALUE.type())) {
+                    const auto DATA = (ICustomConfigValueData*)std::any_cast<void*>(CONFIGVALUE);
+                    currentValue    = DATA->toString();
+                }
+
+                try {
+                    using T = std::decay_t<decltype(val)>;
+                    if constexpr (std::is_same_v<T, SStringData>) {
+                        return std::format(R"#(     "value": "{}",
+        "current": "{}",
+        "explicit": {})#",
+                                           val.value, currentValue, EXPLICIT);
+                    } else if constexpr (std::is_same_v<T, SRangeData>) {
+                        return std::format(R"#(     "value": {},
         "min": {},
-        "max": {})#",
-                                       val.value, val.min, val.max);
-                } else if constexpr (std::is_same_v<T, SFloatData>) {
-                    return std::format(R"#(     "value": {},
+        "max": {},
+        "current": {},
+        "explicit": {})#",
+                                           val.value, val.min, val.max, currentValue, EXPLICIT);
+                    } else if constexpr (std::is_same_v<T, SFloatData>) {
+                        return std::format(R"#(     "value": {},
         "min": {},
-        "max": {})#",
-                                       val.value, val.min, val.max);
-                } else if constexpr (std::is_same_v<T, SColorData>) {
-                    return std::format(R"#(     "value": {})#", val.color.getAsHex());
-                } else if constexpr (std::is_same_v<T, SBoolData>) {
-                    return std::format(R"#(     "value": {})#", val.value);
-                } else if constexpr (std::is_same_v<T, SChoiceData>) {
-                    return std::format(R"#(     "value": {})#", val.choices);
-                } else if constexpr (std::is_same_v<T, SVectorData>) {
-                    return std::format(R"#(     "x": {},
+        "max": {},
+        "current": {},
+        "explicit": {})#",
+                                           val.value, val.min, val.max, currentValue, EXPLICIT);
+                    } else if constexpr (std::is_same_v<T, SColorData>) {
+                        return std::format(R"#(     "value": {},
+        "current": {},
+        "explicit": {})#",
+                                           val.color.getAsHex(), currentValue, EXPLICIT);
+                    } else if constexpr (std::is_same_v<T, SBoolData>) {
+                        return std::format(R"#(     "value": {},
+        "current": {},
+        "explicit": {})#",
+                                           val.value, currentValue, EXPLICIT);
+                    } else if constexpr (std::is_same_v<T, SChoiceData>) {
+                        return std::format(R"#(     "value": {},
+        "firstIndex": {},
+        "current": {},
+        "explicit": {})#",
+                                           val.choices, val.firstIndex, currentValue, EXPLICIT);
+                    } else if constexpr (std::is_same_v<T, SVectorData>) {
+                        return std::format(R"#(     "x": {},
         "y": {},
         "min_x": {},
         "min_y": {},
         "max_x": {},
-        "max_y": {})#",
-                                       val.vec.x, val.vec.y, val.min.x, val.min.y, val.max.x, val.max.y);
-                } else if constexpr (std::is_same_v<T, SGradientData>) {
-                    return std::format(R"#(     "value": "{}")#", val.gradient);
-                }
+        "max_y": {},
+        "current": "{}",
+        "explicit": {})#",
+                                           val.vec.x, val.vec.y, val.min.x, val.min.y, val.max.x, val.max.y, currentValue, EXPLICIT);
+                    } else if constexpr (std::is_same_v<T, SGradientData>) {
+                        return std::format(R"#(     "value": "{}",
+        "current": "{}",
+        "explicit": {})#",
+                                           val.gradient, currentValue, EXPLICIT);
+                    }
+
+                } catch (std::bad_any_cast& e) { Debug::log(ERR, "Bad any_cast on value {} in descriptions", value); }
                 return std::string{""};
             },
             data);
@@ -2843,4 +2949,19 @@ std::string SConfigOptionDescription::jsonify() const {
 
 void CConfigManager::ensurePersistentWorkspacesPresent() {
     g_pCompositor->ensurePersistentWorkspacesPresent(m_vWorkspaceRules);
+}
+
+void CConfigManager::storeFloatingSize(PHLWINDOW window, const Vector2D& size) {
+    Debug::log(LOG, "storing floating size {}x{} for window {}::{}", size.x, size.y, window->m_szClass, window->m_szTitle);
+    SFloatCache id{window};
+    m_mStoredFloatingSizes[id] = size;
+}
+
+std::optional<Vector2D> CConfigManager::getStoredFloatingSize(PHLWINDOW window) {
+    SFloatCache id{window};
+    if (m_mStoredFloatingSizes.contains(id)) {
+        Debug::log(LOG, "got stored size {}x{} for window {}::{}", m_mStoredFloatingSizes[id].x, m_mStoredFloatingSizes[id].y, window->m_szClass, window->m_szTitle);
+        return m_mStoredFloatingSizes[id];
+    }
+    return std::nullopt;
 }

@@ -57,14 +57,22 @@
 #include "../protocols/core/Output.hpp"
 #include "../protocols/core/Shm.hpp"
 #include "../protocols/ColorManagement.hpp"
+#include "../protocols/XXColorManagement.hpp"
 #include "../protocols/FrogColorManagement.hpp"
+#include "../protocols/ContentType.hpp"
 
 #include "../helpers/Monitor.hpp"
 #include "../render/Renderer.hpp"
 #include "../Compositor.hpp"
+#include "content-type-v1.hpp"
 
 #include <aquamarine/buffer/Buffer.hpp>
 #include <aquamarine/backend/Backend.hpp>
+
+// ********************************************************************************************
+// * IMPORTANT: make sure to .reset() any protocol UP's you create! (put reset in destructor) *
+// * otherwise Hyprland might crash when exiting.                                             *
+// ********************************************************************************************
 
 void CProtocolManager::onMonitorModeChange(PHLMONITOR pMonitor) {
     const bool ISMIRROR = pMonitor->isMirror();
@@ -81,14 +89,18 @@ void CProtocolManager::onMonitorModeChange(PHLMONITOR pMonitor) {
         PROTO::outputs.emplace(pMonitor->szName, makeShared<CWLOutputProtocol>(&wl_output_interface, 4, std::format("WLOutput ({})", pMonitor->szName), pMonitor->self.lock()));
     }
 
-    if (PROTO::colorManagement && g_pCompositor->shouldChangePreferredImageDescription())
-        PROTO::colorManagement->onImagePreferredChanged();
+    if (PROTO::colorManagement && g_pCompositor->shouldChangePreferredImageDescription()) {
+        Debug::log(ERR, "FIXME: color management protocol is enabled, need a preferred image description id");
+        PROTO::colorManagement->onImagePreferredChanged(0);
+    }
 }
 
 CProtocolManager::CProtocolManager() {
 
     static const auto PENABLEEXPLICIT = CConfigValue<Hyprlang::INT>("render:explicit_sync");
+    static const auto PENABLECM       = CConfigValue<Hyprlang::INT>("render:cm_enabled");
     static const auto PENABLEXXCM     = CConfigValue<Hyprlang::INT>("experimental:xx_color_management_v4");
+    static const auto PDEBUGCM        = CConfigValue<Hyprlang::INT>("debug:full_cm_proto");
 
     // Outputs are a bit dumb, we have to agree.
     static auto P = g_pHookSystem->hookDynamic("monitorAdded", [this](void* self, SCallbackInfo& info, std::any param) {
@@ -145,7 +157,7 @@ CProtocolManager::CProtocolManager() {
     PROTO::constraints         = makeUnique<CPointerConstraintsProtocol>(&zwp_pointer_constraints_v1_interface, 1, "PointerConstraints");
     PROTO::outputPower         = makeUnique<COutputPowerProtocol>(&zwlr_output_power_manager_v1_interface, 1, "OutputPower");
     PROTO::activation          = makeUnique<CXDGActivationProtocol>(&xdg_activation_v1_interface, 1, "XDGActivation");
-    PROTO::idle                = makeUnique<CIdleNotifyProtocol>(&ext_idle_notifier_v1_interface, 1, "IdleNotify");
+    PROTO::idle                = makeUnique<CIdleNotifyProtocol>(&ext_idle_notifier_v1_interface, 2, "IdleNotify");
     PROTO::lockNotify          = makeUnique<CLockNotifyProtocol>(&hyprland_lock_notifier_v1_interface, 1, "IdleNotify");
     PROTO::sessionLock         = makeUnique<CSessionLockProtocol>(&ext_session_lock_manager_v1_interface, 1, "SessionLock");
     PROTO::ime                 = makeUnique<CInputMethodV2Protocol>(&zwp_input_method_manager_v2_interface, 1, "IMEv2");
@@ -164,16 +176,22 @@ CProtocolManager::CProtocolManager() {
     PROTO::screencopy          = makeUnique<CScreencopyProtocol>(&zwlr_screencopy_manager_v1_interface, 3, "Screencopy");
     PROTO::toplevelExport      = makeUnique<CToplevelExportProtocol>(&hyprland_toplevel_export_manager_v1_interface, 2, "ToplevelExport");
     PROTO::globalShortcuts     = makeUnique<CGlobalShortcutsProtocol>(&hyprland_global_shortcuts_manager_v1_interface, 1, "GlobalShortcuts");
-    PROTO::xdgDialog           = makeUnique<CXDGDialogProtocol>(&xdg_dialog_v1_interface, 1, "XDGDialog");
+    PROTO::xdgDialog           = makeUnique<CXDGDialogProtocol>(&xdg_wm_dialog_v1_interface, 1, "XDGDialog");
     PROTO::singlePixel         = makeUnique<CSinglePixelProtocol>(&wp_single_pixel_buffer_manager_v1_interface, 1, "SinglePixel");
     PROTO::securityContext     = makeUnique<CSecurityContextProtocol>(&wp_security_context_manager_v1_interface, 1, "SecurityContext");
-    PROTO::ctm                 = makeUnique<CHyprlandCTMControlProtocol>(&hyprland_ctm_control_manager_v1_interface, 1, "CTMControl");
+    PROTO::ctm                 = makeUnique<CHyprlandCTMControlProtocol>(&hyprland_ctm_control_manager_v1_interface, 2, "CTMControl");
     PROTO::hyprlandSurface     = makeUnique<CHyprlandSurfaceProtocol>(&hyprland_surface_manager_v1_interface, 2, "HyprlandSurface");
+    PROTO::contentType         = makeUnique<CContentTypeProtocol>(&wp_content_type_manager_v1_interface, 1, "ContentType");
 
-    if (*PENABLEXXCM) {
-        PROTO::colorManagement     = makeUnique<CColorManagementProtocol>(&xx_color_manager_v4_interface, 1, "ColorManagement");
+    if (*PENABLECM)
+        PROTO::colorManagement = makeUnique<CColorManagementProtocol>(&wp_color_manager_v1_interface, 1, "ColorManagement", *PDEBUGCM);
+
+    if (*PENABLEXXCM && *PENABLECM) {
+        PROTO::xxColorManagement   = makeUnique<CXXColorManagementProtocol>(&xx_color_manager_v4_interface, 1, "XXColorManagement");
         PROTO::frogColorManagement = makeUnique<CFrogColorManagementProtocol>(&frog_color_management_factory_v1_interface, 1, "FrogColorManagement");
     }
+
+    // ! please read the top of this file before adding another protocol
 
     for (auto const& b : g_pCompositor->m_pAqBackend->getImplementations()) {
         if (b->type() != Aquamarine::AQ_BACKEND_DRM)
@@ -249,6 +267,10 @@ CProtocolManager::~CProtocolManager() {
     PROTO::securityContext.reset();
     PROTO::ctm.reset();
     PROTO::hyprlandSurface.reset();
+    PROTO::contentType.reset();
+    PROTO::colorManagement.reset();
+    PROTO::xxColorManagement.reset();
+    PROTO::frogColorManagement.reset();
 
     PROTO::lease.reset();
     PROTO::sync.reset();

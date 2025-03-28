@@ -31,12 +31,16 @@ if cpp_compiler.check_header('execinfo.h')
   add_project_arguments('-DHAS_EXECINFO', language: 'cpp')
 endif
 
-aquamarine = dependency('aquamarine', version: '>=0.4.5')
+aquamarine = dependency('aquamarine', version: '>=0.8.0')
 hyprcursor = dependency('hyprcursor', version: '>=0.1.7')
 hyprgraphics = dependency('hyprgraphics', version: '>= 0.1.1')
 hyprlang = dependency('hyprlang', version: '>= 0.3.2')
 hyprutils = dependency('hyprutils', version: '>= 0.2.3')
+aquamarine_version_list = aquamarine.version().split('.')
 add_project_arguments(['-DAQUAMARINE_VERSION="@0@"'.format(aquamarine.version())], language: 'cpp')
+add_project_arguments(['-DAQUAMARINE_VERSION_MAJOR=@0@'.format(aquamarine_version_list.get(0))], language: 'cpp')
+add_project_arguments(['-DAQUAMARINE_VERSION_MINOR=@0@'.format(aquamarine_version_list.get(1))], language: 'cpp')
+add_project_arguments(['-DAQUAMARINE_VERSION_PATCH=@0@'.format(aquamarine_version_list.get(2))], language: 'cpp')
 add_project_arguments(['-DHYPRCURSOR_VERSION="@0@"'.format(hyprcursor.version())], language: 'cpp')
 add_project_arguments(['-DHYPRGRAPHICS_VERSION="@0@"'.format(hyprgraphics.version())], language: 'cpp')
 add_project_arguments(['-DHYPRLANG_VERSION="@0@"'.format(hyprlang.version())], language: 'cpp')
@@ -85,7 +89,7 @@ endif
 run_command('sh', '-c', 'scripts/generateVersion.sh', check: true)
 
 # Install headers
-globber = run_command('find', 'src', '-name', '*.h*', check: true)
+globber = run_command('find', 'src', '-name', '*.h*', '-o', '-name', '*.frag', check: true)
 headers = globber.stdout().strip().split('\n')
 foreach file : headers
   install_headers(file, subdir: 'hyprland', preserve_path: true)
