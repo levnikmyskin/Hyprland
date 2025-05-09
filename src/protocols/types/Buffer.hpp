@@ -8,6 +8,7 @@
 #include <aquamarine/buffer/Buffer.hpp>
 
 class CSyncReleaser;
+class CHLBufferReference;
 
 class IHLBuffer : public Aquamarine::IBuffer {
   public:
@@ -23,32 +24,41 @@ class IHLBuffer : public Aquamarine::IBuffer {
     virtual bool                          locked();
 
     void                                  onBackendRelease(const std::function<void()>& fn);
+    void                                  addReleasePoint(CDRMSyncPointState& point);
 
-    SP<CTexture>                          texture;
-    bool                                  opaque = false;
-    SP<CWLBufferResource>                 resource;
-    UP<CSyncReleaser>                     syncReleaser;
+    SP<CTexture>                          m_texture;
+    bool                                  m_opaque = false;
+    SP<CWLBufferResource>                 m_resource;
+    std::vector<UP<CSyncReleaser>>        m_syncReleasers;
 
     struct {
         CHyprSignalListener backendRelease;
         CHyprSignalListener backendRelease2; // for explicit ds
-    } hlEvents;
+    } m_hlEvents;
 
   private:
-    int nLocks = 0;
+    int m_locks = 0;
+
+    friend class CHLBufferReference;
 };
 
 // for ref-counting. Releases in ~dtor
-// surface optional
 class CHLBufferReference {
   public:
-    CHLBufferReference(SP<IHLBuffer> buffer, SP<CWLSurfaceResource> surface);
+    CHLBufferReference();
+    CHLBufferReference(const CHLBufferReference& other);
+    CHLBufferReference(SP<IHLBuffer> buffer);
     ~CHLBufferReference();
 
-    SP<IHLBuffer>          buffer;
-    UP<CDRMSyncPointState> acquire;
-    UP<CDRMSyncPointState> release;
+    CHLBufferReference& operator=(const CHLBufferReference& other);
+    bool                operator==(const CHLBufferReference& other) const;
+    bool                operator==(const SP<IHLBuffer>& other) const;
+    bool                operator==(const SP<Aquamarine::IBuffer>& other) const;
+    SP<IHLBuffer>       operator->() const;
+    operator bool() const;
 
-  private:
-    WP<CWLSurfaceResource> surface;
+    // unlock and drop the buffer without sending release
+    void          drop();
+
+    SP<IHLBuffer> m_buffer;
 };

@@ -2,11 +2,13 @@
 #include "../defines.hpp"
 #include "../helpers/varlist/VarList.hpp"
 #include <vector>
+#include <map>
 
 enum eConfigValueDataTypes : int8_t {
-    CVD_TYPE_INVALID   = -1,
-    CVD_TYPE_GRADIENT  = 0,
-    CVD_TYPE_CSS_VALUE = 1
+    CVD_TYPE_INVALID     = -1,
+    CVD_TYPE_GRADIENT    = 0,
+    CVD_TYPE_CSS_VALUE   = 1,
+    CVD_TYPE_FONT_WEIGHT = 2,
 };
 
 class ICustomConfigValueData {
@@ -22,7 +24,7 @@ class CGradientValueData : public ICustomConfigValueData {
   public:
     CGradientValueData() = default;
     CGradientValueData(CHyprColor col) {
-        m_vColors.push_back(col);
+        m_colors.push_back(col);
         updateColorsOk();
     };
     virtual ~CGradientValueData() = default;
@@ -32,39 +34,39 @@ class CGradientValueData : public ICustomConfigValueData {
     }
 
     void reset(CHyprColor col) {
-        m_vColors.clear();
-        m_vColors.emplace_back(col);
-        m_fAngle = 0;
+        m_colors.clear();
+        m_colors.emplace_back(col);
+        m_angle = 0;
         updateColorsOk();
     }
 
     void updateColorsOk() {
-        m_vColorsOkLabA.clear();
-        for (auto& c : m_vColors) {
+        m_colorsOkLabA.clear();
+        for (auto& c : m_colors) {
             const auto OKLAB = c.asOkLab();
-            m_vColorsOkLabA.emplace_back(OKLAB.l);
-            m_vColorsOkLabA.emplace_back(OKLAB.a);
-            m_vColorsOkLabA.emplace_back(OKLAB.b);
-            m_vColorsOkLabA.emplace_back(c.a);
+            m_colorsOkLabA.emplace_back(OKLAB.l);
+            m_colorsOkLabA.emplace_back(OKLAB.a);
+            m_colorsOkLabA.emplace_back(OKLAB.b);
+            m_colorsOkLabA.emplace_back(c.a);
         }
     }
 
     /* Vector containing the colors */
-    std::vector<CHyprColor> m_vColors;
+    std::vector<CHyprColor> m_colors;
 
     /* Vector containing pure colors for shoving into opengl */
-    std::vector<float> m_vColorsOkLabA;
+    std::vector<float> m_colorsOkLabA;
 
     /* Float corresponding to the angle (rad) */
-    float m_fAngle = 0;
+    float m_angle = 0;
 
     //
     bool operator==(const CGradientValueData& other) const {
-        if (other.m_vColors.size() != m_vColors.size() || m_fAngle != other.m_fAngle)
+        if (other.m_colors.size() != m_colors.size() || m_angle != other.m_angle)
             return false;
 
-        for (size_t i = 0; i < m_vColors.size(); ++i)
-            if (m_vColors[i] != other.m_vColors[i])
+        for (size_t i = 0; i < m_colors.size(); ++i)
+            if (m_colors[i] != other.m_colors[i])
                 return false;
 
         return true;
@@ -72,28 +74,28 @@ class CGradientValueData : public ICustomConfigValueData {
 
     virtual std::string toString() {
         std::string result;
-        for (auto& c : m_vColors) {
+        for (auto& c : m_colors) {
             result += std::format("{:x} ", c.getAsHex());
         }
 
-        result += std::format("{}deg", (int)(m_fAngle * 180.0 / M_PI));
+        result += std::format("{}deg", (int)(m_angle * 180.0 / M_PI));
         return result;
     }
 };
 
 class CCssGapData : public ICustomConfigValueData {
   public:
-    CCssGapData() : top(0), right(0), bottom(0), left(0) {};
-    CCssGapData(int64_t global) : top(global), right(global), bottom(global), left(global) {};
-    CCssGapData(int64_t vertical, int64_t horizontal) : top(vertical), right(horizontal), bottom(vertical), left(horizontal) {};
-    CCssGapData(int64_t top, int64_t horizontal, int64_t bottom) : top(top), right(horizontal), bottom(bottom), left(horizontal) {};
-    CCssGapData(int64_t top, int64_t right, int64_t bottom, int64_t left) : top(top), right(right), bottom(bottom), left(left) {};
+    CCssGapData() : m_top(0), m_right(0), m_bottom(0), m_left(0) {};
+    CCssGapData(int64_t global) : m_top(global), m_right(global), m_bottom(global), m_left(global) {};
+    CCssGapData(int64_t vertical, int64_t horizontal) : m_top(vertical), m_right(horizontal), m_bottom(vertical), m_left(horizontal) {};
+    CCssGapData(int64_t top, int64_t horizontal, int64_t bottom) : m_top(top), m_right(horizontal), m_bottom(bottom), m_left(horizontal) {};
+    CCssGapData(int64_t top, int64_t right, int64_t bottom, int64_t left) : m_top(top), m_right(right), m_bottom(bottom), m_left(left) {};
 
     /* Css like directions */
-    int64_t top;
-    int64_t right;
-    int64_t bottom;
-    int64_t left;
+    int64_t m_top;
+    int64_t m_right;
+    int64_t m_bottom;
+    int64_t m_left;
 
     void    parseGapData(CVarList varlist) {
         switch (varlist.size()) {
@@ -122,10 +124,10 @@ class CCssGapData : public ICustomConfigValueData {
     }
 
     void reset(int64_t global) {
-        top    = global;
-        right  = global;
-        bottom = global;
-        left   = global;
+        m_top    = global;
+        m_right  = global;
+        m_bottom = global;
+        m_left   = global;
     }
 
     virtual eConfigValueDataTypes getDataType() {
@@ -133,6 +135,44 @@ class CCssGapData : public ICustomConfigValueData {
     }
 
     virtual std::string toString() {
-        return std::format("{} {} {} {}", top, right, bottom, left);
+        return std::format("{} {} {} {}", m_top, m_right, m_bottom, m_left);
+    }
+};
+
+class CFontWeightConfigValueData : public ICustomConfigValueData {
+  public:
+    CFontWeightConfigValueData() = default;
+    CFontWeightConfigValueData(const char* weight) {
+        parseWeight(weight);
+    }
+
+    int64_t                       m_value = 400; // default to normal weight
+
+    virtual eConfigValueDataTypes getDataType() {
+        return CVD_TYPE_FONT_WEIGHT;
+    }
+
+    virtual std::string toString() {
+        return std::format("{}", m_value);
+    }
+
+    void parseWeight(const std::string& strWeight) {
+        auto lcWeight{strWeight};
+        transform(strWeight.begin(), strWeight.end(), lcWeight.begin(), ::tolower);
+
+        // values taken from Pango weight enums
+        const auto WEIGHTS = std::map<std::string, int>{
+            {"thin", 100},   {"ultralight", 200}, {"light", 300}, {"semilight", 350}, {"book", 380},  {"normal", 400},
+            {"medium", 500}, {"semibold", 600},   {"bold", 700},  {"ultrabold", 800}, {"heavy", 900}, {"ultraheavy", 1000},
+        };
+
+        auto weight = WEIGHTS.find(lcWeight);
+        if (weight != WEIGHTS.end())
+            m_value = weight->second;
+        else {
+            int w_i = std::stoi(strWeight);
+            if (w_i < 100 || w_i > 1000)
+                m_value = 400;
+        }
     }
 };

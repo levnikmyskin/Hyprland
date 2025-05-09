@@ -20,8 +20,8 @@ static int wlTick(SP<CEventLoopTimer> self, void* data) {
     if (g_pAnimationManager)
         g_pAnimationManager->onTicked();
 
-    if (g_pCompositor->m_bSessionActive && g_pAnimationManager && g_pHookSystem && !g_pCompositor->m_bUnsafeState &&
-        std::ranges::any_of(g_pCompositor->m_vMonitors, [](const auto& mon) { return mon->m_bEnabled && mon->output; })) {
+    if (g_pCompositor->m_sessionActive && g_pAnimationManager && g_pHookSystem && !g_pCompositor->m_unsafeState &&
+        std::ranges::any_of(g_pCompositor->m_monitors, [](const auto& mon) { return mon->m_enabled && mon->m_output; })) {
         g_pAnimationManager->tick();
         EMIT_HOOK_EVENT("tick", nullptr);
     }
@@ -33,9 +33,9 @@ static int wlTick(SP<CEventLoopTimer> self, void* data) {
 }
 
 CHyprAnimationManager::CHyprAnimationManager() {
-    m_pAnimationTimer = SP<CEventLoopTimer>(new CEventLoopTimer(std::chrono::microseconds(500), wlTick, nullptr));
+    m_animationTimer = SP<CEventLoopTimer>(new CEventLoopTimer(std::chrono::microseconds(500), wlTick, nullptr));
     if (g_pEventLoopManager) // null in --verify-config mode
-        g_pEventLoopManager->addTimer(m_pAnimationTimer);
+        g_pEventLoopManager->addTimer(m_animationTimer);
 
     addBezierWithName("linear", Vector2D(0.0, 0.0), Vector2D(1.0, 1.0));
 }
@@ -64,7 +64,7 @@ static void updateColorVariable(CAnimatedVariable<CHyprColor>& av, const float P
     const auto&                L1 = av.begun().asOkLab();
     const auto&                L2 = av.goal().asOkLab();
 
-    static const auto          lerp = [](const float one, const float two, const float progress) -> float { return one + (two - one) * progress; };
+    static const auto          lerp = [](const float one, const float two, const float progress) -> float { return one + ((two - one) * progress); };
 
     const Hyprgraphics::CColor lerped = Hyprgraphics::CColor::SOkLab{
         .l = lerp(L1.l, L2.l, POINTY),
@@ -94,55 +94,55 @@ static void handleUpdate(CAnimatedVariable<VarType>& av, bool warp) {
             PDECO->damageEntire();
         }
 
-        PMONITOR = PWINDOW->m_pMonitor.lock();
+        PMONITOR = PWINDOW->m_monitor.lock();
         if (!PMONITOR)
             return;
 
-        animationsDisabled = PWINDOW->m_sWindowData.noAnim.valueOr(animationsDisabled);
+        animationsDisabled = PWINDOW->m_windowData.noAnim.valueOr(animationsDisabled);
     } else if (PWORKSPACE) {
-        PMONITOR = PWORKSPACE->m_pMonitor.lock();
+        PMONITOR = PWORKSPACE->m_monitor.lock();
         if (!PMONITOR)
             return;
 
         // dont damage the whole monitor on workspace change, unless it's a special workspace, because dim/blur etc
-        if (PWORKSPACE->m_bIsSpecialWorkspace)
+        if (PWORKSPACE->m_isSpecialWorkspace)
             g_pHyprRenderer->damageMonitor(PMONITOR);
 
         // TODO: just make this into a damn callback already vax...
-        for (auto const& w : g_pCompositor->m_vWindows) {
-            if (!w->m_bIsMapped || w->isHidden() || w->m_pWorkspace != PWORKSPACE)
+        for (auto const& w : g_pCompositor->m_windows) {
+            if (!w->m_isMapped || w->isHidden() || w->m_workspace != PWORKSPACE)
                 continue;
 
-            if (w->m_bIsFloating && !w->m_bPinned) {
+            if (w->m_isFloating && !w->m_pinned) {
                 // still doing the full damage hack for floating because sometimes when the window
                 // goes through multiple monitors the last rendered frame is missing damage somehow??
                 const CBox windowBoxNoOffset = w->getFullWindowBoundingBox();
-                const CBox monitorBox        = {PMONITOR->vecPosition, PMONITOR->vecSize};
+                const CBox monitorBox        = {PMONITOR->m_position, PMONITOR->m_size};
                 if (windowBoxNoOffset.intersection(monitorBox) != windowBoxNoOffset) // on edges between multiple monitors
                     g_pHyprRenderer->damageWindow(w, true);
             }
 
-            if (PWORKSPACE->m_bIsSpecialWorkspace)
+            if (PWORKSPACE->m_isSpecialWorkspace)
                 g_pHyprRenderer->damageWindow(w, true); // hack for special too because it can cross multiple monitors
         }
 
         // damage any workspace window that is on any monitor
-        for (auto const& w : g_pCompositor->m_vWindows) {
-            if (!validMapped(w) || w->m_pWorkspace != PWORKSPACE || w->m_bPinned)
+        for (auto const& w : g_pCompositor->m_windows) {
+            if (!validMapped(w) || w->m_workspace != PWORKSPACE || w->m_pinned)
                 continue;
 
             g_pHyprRenderer->damageWindow(w);
         }
     } else if (PLAYER) {
         // "some fucking layers miss 1 pixel???" -- vaxry
-        CBox expandBox = CBox{PLAYER->realPosition->value(), PLAYER->realSize->value()};
+        CBox expandBox = CBox{PLAYER->m_realPosition->value(), PLAYER->m_realSize->value()};
         expandBox.expand(5);
         g_pHyprRenderer->damageBox(expandBox);
 
-        PMONITOR = g_pCompositor->getMonitorFromVector(PLAYER->realPosition->goal() + PLAYER->realSize->goal() / 2.F);
+        PMONITOR = g_pCompositor->getMonitorFromVector(PLAYER->m_realPosition->goal() + PLAYER->m_realSize->goal() / 2.F);
         if (!PMONITOR)
             return;
-        animationsDisabled = animationsDisabled || PLAYER->noAnimations;
+        animationsDisabled = animationsDisabled || PLAYER->m_noAnimations;
     }
 
     const auto SPENT   = av.getPercent();
@@ -163,22 +163,22 @@ static void handleUpdate(CAnimatedVariable<VarType>& av, bool warp) {
                 PWINDOW->updateWindowDecos();
                 g_pHyprRenderer->damageWindow(PWINDOW);
             } else if (PWORKSPACE) {
-                for (auto const& w : g_pCompositor->m_vWindows) {
-                    if (!validMapped(w) || w->m_pWorkspace != PWORKSPACE)
+                for (auto const& w : g_pCompositor->m_windows) {
+                    if (!validMapped(w) || w->m_workspace != PWORKSPACE)
                         continue;
 
                     w->updateWindowDecos();
 
                     // damage any workspace window that is on any monitor
-                    if (!w->m_bPinned)
+                    if (!w->m_pinned)
                         g_pHyprRenderer->damageWindow(w);
                 }
             } else if (PLAYER) {
-                if (PLAYER->layer <= 1)
+                if (PLAYER->m_layer <= 1)
                     g_pHyprOpenGL->markBlurDirtyForMonitor(PMONITOR);
 
                 // some fucking layers miss 1 pixel???
-                CBox expandBox = CBox{PLAYER->realPosition->value(), PLAYER->realSize->value()};
+                CBox expandBox = CBox{PLAYER->m_realPosition->value(), PLAYER->m_realSize->value()};
                 expandBox.expand(5);
                 g_pHyprRenderer->damageBox(expandBox);
             }
@@ -213,7 +213,7 @@ static void handleUpdate(CAnimatedVariable<VarType>& av, bool warp) {
 
 void CHyprAnimationManager::tick() {
     static std::chrono::time_point lastTick = std::chrono::high_resolution_clock::now();
-    m_fLastTickTime                         = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - lastTick).count() / 1000.0;
+    m_lastTickTimeMs                        = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::high_resolution_clock::now() - lastTick).count() / 1000.0;
     lastTick                                = std::chrono::high_resolution_clock::now();
 
     static auto PANIMENABLED = CConfigValue<Hyprlang::INT>("animations:enabled");
@@ -250,29 +250,29 @@ void CHyprAnimationManager::tick() {
 }
 
 void CHyprAnimationManager::scheduleTick() {
-    if (m_bTickScheduled)
+    if (m_tickScheduled)
         return;
 
-    m_bTickScheduled = true;
+    m_tickScheduled = true;
 
-    const auto PMOSTHZ = g_pHyprRenderer->m_pMostHzMonitor;
+    const auto PMOSTHZ = g_pHyprRenderer->m_mostHzMonitor;
 
     if (!PMOSTHZ) {
-        m_pAnimationTimer->updateTimeout(std::chrono::milliseconds(16));
+        m_animationTimer->updateTimeout(std::chrono::milliseconds(16));
         return;
     }
 
-    float       refreshDelayMs = std::floor(1000.f / PMOSTHZ->refreshRate);
+    float       refreshDelayMs = std::floor(1000.f / PMOSTHZ->m_refreshRate);
 
-    const float SINCEPRES = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - PMOSTHZ->lastPresentationTimer.chrono()).count() / 1000.f;
+    const float SINCEPRES = std::chrono::duration_cast<std::chrono::microseconds>(Time::steadyNow() - PMOSTHZ->m_lastPresentationTimer.chrono()).count() / 1000.F;
 
     const auto  TOPRES = std::clamp(refreshDelayMs - SINCEPRES, 1.1f, 1000.f); // we can't send 0, that will disarm it
 
-    m_pAnimationTimer->updateTimeout(std::chrono::milliseconds((int)std::floor(TOPRES)));
+    m_animationTimer->updateTimeout(std::chrono::milliseconds((int)std::floor(TOPRES)));
 }
 
 void CHyprAnimationManager::onTicked() {
-    m_bTickScheduled = false;
+    m_tickScheduled = false;
 }
 
 //
@@ -281,25 +281,25 @@ void CHyprAnimationManager::onTicked() {
 //
 
 void CHyprAnimationManager::animationPopin(PHLWINDOW pWindow, bool close, float minPerc) {
-    const auto GOALPOS  = pWindow->m_vRealPosition->goal();
-    const auto GOALSIZE = pWindow->m_vRealSize->goal();
+    const auto GOALPOS  = pWindow->m_realPosition->goal();
+    const auto GOALSIZE = pWindow->m_realSize->goal();
 
     if (!close) {
-        pWindow->m_vRealSize->setValue((GOALSIZE * minPerc).clamp({5, 5}, {GOALSIZE.x, GOALSIZE.y}));
-        pWindow->m_vRealPosition->setValue(GOALPOS + GOALSIZE / 2.f - pWindow->m_vRealSize->value() / 2.f);
+        pWindow->m_realSize->setValue((GOALSIZE * minPerc).clamp({5, 5}, {GOALSIZE.x, GOALSIZE.y}));
+        pWindow->m_realPosition->setValue(GOALPOS + GOALSIZE / 2.f - pWindow->m_realSize->value() / 2.f);
     } else {
-        *pWindow->m_vRealSize     = (GOALSIZE * minPerc).clamp({5, 5}, {GOALSIZE.x, GOALSIZE.y});
-        *pWindow->m_vRealPosition = GOALPOS + GOALSIZE / 2.f - pWindow->m_vRealSize->goal() / 2.f;
+        *pWindow->m_realSize     = (GOALSIZE * minPerc).clamp({5, 5}, {GOALSIZE.x, GOALSIZE.y});
+        *pWindow->m_realPosition = GOALPOS + GOALSIZE / 2.f - pWindow->m_realSize->goal() / 2.f;
     }
 }
 
 void CHyprAnimationManager::animationSlide(PHLWINDOW pWindow, std::string force, bool close) {
-    pWindow->m_vRealSize->warp(false); // size we preserve in slide
+    pWindow->m_realSize->warp(false); // size we preserve in slide
 
-    const auto GOALPOS  = pWindow->m_vRealPosition->goal();
-    const auto GOALSIZE = pWindow->m_vRealSize->goal();
+    const auto GOALPOS  = pWindow->m_realPosition->goal();
+    const auto GOALSIZE = pWindow->m_realSize->goal();
 
-    const auto PMONITOR = pWindow->m_pMonitor.lock();
+    const auto PMONITOR = pWindow->m_monitor.lock();
 
     if (!PMONITOR)
         return; // unsafe state most likely
@@ -308,18 +308,18 @@ void CHyprAnimationManager::animationSlide(PHLWINDOW pWindow, std::string force,
 
     if (force != "") {
         if (force == "bottom")
-            posOffset = Vector2D(GOALPOS.x, PMONITOR->vecPosition.y + PMONITOR->vecSize.y);
+            posOffset = Vector2D(GOALPOS.x, PMONITOR->m_position.y + PMONITOR->m_size.y);
         else if (force == "left")
             posOffset = GOALPOS - Vector2D(GOALSIZE.x, 0.0);
         else if (force == "right")
             posOffset = GOALPOS + Vector2D(GOALSIZE.x, 0.0);
         else
-            posOffset = Vector2D(GOALPOS.x, PMONITOR->vecPosition.y - GOALSIZE.y);
+            posOffset = Vector2D(GOALPOS.x, PMONITOR->m_position.y - GOALSIZE.y);
 
         if (!close)
-            pWindow->m_vRealPosition->setValue(posOffset);
+            pWindow->m_realPosition->setValue(posOffset);
         else
-            *pWindow->m_vRealPosition = posOffset;
+            *pWindow->m_realPosition = posOffset;
 
         return;
     }
@@ -327,10 +327,10 @@ void CHyprAnimationManager::animationSlide(PHLWINDOW pWindow, std::string force,
     const auto MIDPOINT = GOALPOS + GOALSIZE / 2.f;
 
     // check sides it touches
-    const bool DISPLAYLEFT   = STICKS(pWindow->m_vPosition.x, PMONITOR->vecPosition.x + PMONITOR->vecReservedTopLeft.x);
-    const bool DISPLAYRIGHT  = STICKS(pWindow->m_vPosition.x + pWindow->m_vSize.x, PMONITOR->vecPosition.x + PMONITOR->vecSize.x - PMONITOR->vecReservedBottomRight.x);
-    const bool DISPLAYTOP    = STICKS(pWindow->m_vPosition.y, PMONITOR->vecPosition.y + PMONITOR->vecReservedTopLeft.y);
-    const bool DISPLAYBOTTOM = STICKS(pWindow->m_vPosition.y + pWindow->m_vSize.y, PMONITOR->vecPosition.y + PMONITOR->vecSize.y - PMONITOR->vecReservedBottomRight.y);
+    const bool DISPLAYLEFT   = STICKS(pWindow->m_position.x, PMONITOR->m_position.x + PMONITOR->m_reservedTopLeft.x);
+    const bool DISPLAYRIGHT  = STICKS(pWindow->m_position.x + pWindow->m_size.x, PMONITOR->m_position.x + PMONITOR->m_size.x - PMONITOR->m_reservedBottomRight.x);
+    const bool DISPLAYTOP    = STICKS(pWindow->m_position.y, PMONITOR->m_position.y + PMONITOR->m_reservedTopLeft.y);
+    const bool DISPLAYBOTTOM = STICKS(pWindow->m_position.y + pWindow->m_size.y, PMONITOR->m_position.y + PMONITOR->m_size.y - PMONITOR->m_reservedBottomRight.y);
 
     if (DISPLAYBOTTOM && DISPLAYTOP) {
         if (DISPLAYLEFT && DISPLAYRIGHT) {
@@ -345,59 +345,59 @@ void CHyprAnimationManager::animationSlide(PHLWINDOW pWindow, std::string force,
     } else if (DISPLAYBOTTOM) {
         posOffset = GOALPOS + Vector2D(0.0, GOALSIZE.y);
     } else {
-        if (MIDPOINT.y > PMONITOR->vecPosition.y + PMONITOR->vecSize.y / 2.f)
-            posOffset = Vector2D(GOALPOS.x, PMONITOR->vecPosition.y + PMONITOR->vecSize.y);
+        if (MIDPOINT.y > PMONITOR->m_position.y + PMONITOR->m_size.y / 2.f)
+            posOffset = Vector2D(GOALPOS.x, PMONITOR->m_position.y + PMONITOR->m_size.y);
         else
-            posOffset = Vector2D(GOALPOS.x, PMONITOR->vecPosition.y - GOALSIZE.y);
+            posOffset = Vector2D(GOALPOS.x, PMONITOR->m_position.y - GOALSIZE.y);
     }
 
     if (!close)
-        pWindow->m_vRealPosition->setValue(posOffset);
+        pWindow->m_realPosition->setValue(posOffset);
     else
-        *pWindow->m_vRealPosition = posOffset;
+        *pWindow->m_realPosition = posOffset;
 }
 
 void CHyprAnimationManager::animationGnomed(PHLWINDOW pWindow, bool close) {
-    const auto GOALPOS  = pWindow->m_vRealPosition->goal();
-    const auto GOALSIZE = pWindow->m_vRealSize->goal();
+    const auto GOALPOS  = pWindow->m_realPosition->goal();
+    const auto GOALSIZE = pWindow->m_realSize->goal();
 
     if (close) {
-        *pWindow->m_vRealPosition = GOALPOS + Vector2D{0.F, GOALSIZE.y / 2.F};
-        *pWindow->m_vRealSize     = Vector2D{GOALSIZE.x, 0.F};
+        *pWindow->m_realPosition = GOALPOS + Vector2D{0.F, GOALSIZE.y / 2.F};
+        *pWindow->m_realSize     = Vector2D{GOALSIZE.x, 0.F};
     } else {
-        pWindow->m_vRealPosition->setValueAndWarp(GOALPOS + Vector2D{0.F, GOALSIZE.y / 2.F});
-        pWindow->m_vRealSize->setValueAndWarp(Vector2D{GOALSIZE.x, 0.F});
-        *pWindow->m_vRealPosition = GOALPOS;
-        *pWindow->m_vRealSize     = GOALSIZE;
+        pWindow->m_realPosition->setValueAndWarp(GOALPOS + Vector2D{0.F, GOALSIZE.y / 2.F});
+        pWindow->m_realSize->setValueAndWarp(Vector2D{GOALSIZE.x, 0.F});
+        *pWindow->m_realPosition = GOALPOS;
+        *pWindow->m_realSize     = GOALSIZE;
     }
 }
 
 void CHyprAnimationManager::onWindowPostCreateClose(PHLWINDOW pWindow, bool close) {
     if (!close) {
-        pWindow->m_vRealPosition->setConfig(g_pConfigManager->getAnimationPropertyConfig("windowsIn"));
-        pWindow->m_vRealSize->setConfig(g_pConfigManager->getAnimationPropertyConfig("windowsIn"));
-        pWindow->m_fAlpha->setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeIn"));
+        pWindow->m_realPosition->setConfig(g_pConfigManager->getAnimationPropertyConfig("windowsIn"));
+        pWindow->m_realSize->setConfig(g_pConfigManager->getAnimationPropertyConfig("windowsIn"));
+        pWindow->m_alpha->setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeIn"));
     } else {
-        pWindow->m_vRealPosition->setConfig(g_pConfigManager->getAnimationPropertyConfig("windowsOut"));
-        pWindow->m_vRealSize->setConfig(g_pConfigManager->getAnimationPropertyConfig("windowsOut"));
-        pWindow->m_fAlpha->setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeOut"));
+        pWindow->m_realPosition->setConfig(g_pConfigManager->getAnimationPropertyConfig("windowsOut"));
+        pWindow->m_realSize->setConfig(g_pConfigManager->getAnimationPropertyConfig("windowsOut"));
+        pWindow->m_alpha->setConfig(g_pConfigManager->getAnimationPropertyConfig("fadeOut"));
     }
 
-    std::string ANIMSTYLE = pWindow->m_vRealPosition->getStyle();
+    std::string ANIMSTYLE = pWindow->m_realPosition->getStyle();
     transform(ANIMSTYLE.begin(), ANIMSTYLE.end(), ANIMSTYLE.begin(), ::tolower);
 
     CVarList animList(ANIMSTYLE, 0, 's');
 
     // if the window is not being animated, that means the layout set a fixed size for it, don't animate.
-    if (!pWindow->m_vRealPosition->isBeingAnimated() && !pWindow->m_vRealSize->isBeingAnimated())
+    if (!pWindow->m_realPosition->isBeingAnimated() && !pWindow->m_realSize->isBeingAnimated())
         return;
 
     // if the animation is disabled and we are leaving, ignore the anim to prevent the snapshot being fucked
-    if (!pWindow->m_vRealPosition->enabled())
+    if (!pWindow->m_realPosition->enabled())
         return;
 
-    if (pWindow->m_sWindowData.animationStyle.hasValue()) {
-        const auto STYLE = pWindow->m_sWindowData.animationStyle.value();
+    if (pWindow->m_windowData.animationStyle.hasValue()) {
+        const auto STYLE = pWindow->m_windowData.animationStyle.value();
         // the window has config'd special anim
         if (STYLE.starts_with("slide")) {
             CVarList animList2(STYLE, 0, 's');

@@ -42,6 +42,7 @@
 #include "../protocols/DRMSyncobj.hpp"
 #include "../protocols/Screencopy.hpp"
 #include "../protocols/ToplevelExport.hpp"
+#include "../protocols/ToplevelMapping.hpp"
 #include "../protocols/TextInputV1.hpp"
 #include "../protocols/GlobalShortcuts.hpp"
 #include "../protocols/XDGDialog.hpp"
@@ -49,7 +50,6 @@
 #include "../protocols/SecurityContext.hpp"
 #include "../protocols/CTMControl.hpp"
 #include "../protocols/HyprlandSurface.hpp"
-
 #include "../protocols/core/Seat.hpp"
 #include "../protocols/core/DataDevice.hpp"
 #include "../protocols/core/Compositor.hpp"
@@ -60,6 +60,8 @@
 #include "../protocols/XXColorManagement.hpp"
 #include "../protocols/FrogColorManagement.hpp"
 #include "../protocols/ContentType.hpp"
+#include "../protocols/XDGTag.hpp"
+#include "../protocols/XDGBell.hpp"
 
 #include "../helpers/Monitor.hpp"
 #include "../render/Renderer.hpp"
@@ -68,6 +70,7 @@
 
 #include <aquamarine/buffer/Buffer.hpp>
 #include <aquamarine/backend/Backend.hpp>
+#include <hyprutils/memory/UniquePtr.hpp>
 
 // ********************************************************************************************
 // * IMPORTANT: make sure to .reset() any protocol UP's you create! (put reset in destructor) *
@@ -81,12 +84,12 @@ void CProtocolManager::onMonitorModeChange(PHLMONITOR pMonitor) {
     // mirrored outputs should have their global removed, as they are not physical parts of the
     // layout.
 
-    if (ISMIRROR && PROTO::outputs.contains(pMonitor->szName))
-        PROTO::outputs.at(pMonitor->szName)->remove();
-    else if (!ISMIRROR && (!PROTO::outputs.contains(pMonitor->szName) || PROTO::outputs.at(pMonitor->szName)->isDefunct())) {
-        if (PROTO::outputs.contains(pMonitor->szName))
-            PROTO::outputs.erase(pMonitor->szName);
-        PROTO::outputs.emplace(pMonitor->szName, makeShared<CWLOutputProtocol>(&wl_output_interface, 4, std::format("WLOutput ({})", pMonitor->szName), pMonitor->self.lock()));
+    if (ISMIRROR && PROTO::outputs.contains(pMonitor->m_name))
+        PROTO::outputs.at(pMonitor->m_name)->remove();
+    else if (!ISMIRROR && (!PROTO::outputs.contains(pMonitor->m_name) || PROTO::outputs.at(pMonitor->m_name)->isDefunct())) {
+        if (PROTO::outputs.contains(pMonitor->m_name))
+            PROTO::outputs.erase(pMonitor->m_name);
+        PROTO::outputs.emplace(pMonitor->m_name, makeShared<CWLOutputProtocol>(&wl_output_interface, 4, std::format("WLOutput ({})", pMonitor->m_name), pMonitor->m_self.lock()));
     }
 
     if (PROTO::colorManagement && g_pCompositor->shouldChangePreferredImageDescription()) {
@@ -109,25 +112,25 @@ CProtocolManager::CProtocolManager() {
         // ignore mirrored outputs. I don't think this will ever be hit as mirrors are applied after
         // this event is emitted iirc.
         // also ignore the fallback
-        if (M->isMirror() || M == g_pCompositor->m_pUnsafeOutput)
+        if (M->isMirror() || M == g_pCompositor->m_unsafeOutput)
             return;
 
-        if (PROTO::outputs.contains(M->szName))
-            PROTO::outputs.erase(M->szName);
+        if (PROTO::outputs.contains(M->m_name))
+            PROTO::outputs.erase(M->m_name);
 
-        auto ref = makeShared<CWLOutputProtocol>(&wl_output_interface, 4, std::format("WLOutput ({})", M->szName), M->self.lock());
-        PROTO::outputs.emplace(M->szName, ref);
-        ref->self = ref;
+        auto ref = makeShared<CWLOutputProtocol>(&wl_output_interface, 4, std::format("WLOutput ({})", M->m_name), M->m_self.lock());
+        PROTO::outputs.emplace(M->m_name, ref);
+        ref->m_self = ref;
 
-        m_mModeChangeListeners[M->szName] = M->events.modeChanged.registerListener([M, this](std::any d) { onMonitorModeChange(M); });
+        m_modeChangeListeners[M->m_name] = M->m_events.modeChanged.registerListener([M, this](std::any d) { onMonitorModeChange(M); });
     });
 
     static auto P2 = g_pHookSystem->hookDynamic("monitorRemoved", [this](void* self, SCallbackInfo& info, std::any param) {
         auto M = std::any_cast<PHLMONITOR>(param);
-        if (!PROTO::outputs.contains(M->szName))
+        if (!PROTO::outputs.contains(M->m_name))
             return;
-        PROTO::outputs.at(M->szName)->remove();
-        m_mModeChangeListeners.erase(M->szName);
+        PROTO::outputs.at(M->m_name)->remove();
+        m_modeChangeListeners.erase(M->m_name);
     });
 
     // Core
@@ -175,6 +178,7 @@ CProtocolManager::CProtocolManager() {
     PROTO::xwaylandShell       = makeUnique<CXWaylandShellProtocol>(&xwayland_shell_v1_interface, 1, "XWaylandShell");
     PROTO::screencopy          = makeUnique<CScreencopyProtocol>(&zwlr_screencopy_manager_v1_interface, 3, "Screencopy");
     PROTO::toplevelExport      = makeUnique<CToplevelExportProtocol>(&hyprland_toplevel_export_manager_v1_interface, 2, "ToplevelExport");
+    PROTO::toplevelMapping     = makeUnique<CToplevelMappingProtocol>(&hyprland_toplevel_mapping_manager_v1_interface, 1, "ToplevelMapping");
     PROTO::globalShortcuts     = makeUnique<CGlobalShortcutsProtocol>(&hyprland_global_shortcuts_manager_v1_interface, 1, "GlobalShortcuts");
     PROTO::xdgDialog           = makeUnique<CXDGDialogProtocol>(&xdg_wm_dialog_v1_interface, 1, "XDGDialog");
     PROTO::singlePixel         = makeUnique<CSinglePixelProtocol>(&wp_single_pixel_buffer_manager_v1_interface, 1, "SinglePixel");
@@ -182,6 +186,8 @@ CProtocolManager::CProtocolManager() {
     PROTO::ctm                 = makeUnique<CHyprlandCTMControlProtocol>(&hyprland_ctm_control_manager_v1_interface, 2, "CTMControl");
     PROTO::hyprlandSurface     = makeUnique<CHyprlandSurfaceProtocol>(&hyprland_surface_manager_v1_interface, 2, "HyprlandSurface");
     PROTO::contentType         = makeUnique<CContentTypeProtocol>(&wp_content_type_manager_v1_interface, 1, "ContentType");
+    PROTO::xdgTag              = makeUnique<CXDGToplevelTagProtocol>(&xdg_toplevel_tag_manager_v1_interface, 1, "XDGTag");
+    PROTO::xdgBell             = makeUnique<CXDGSystemBellProtocol>(&xdg_system_bell_v1_interface, 1, "XDGBell");
 
     if (*PENABLECM)
         PROTO::colorManagement = makeUnique<CColorManagementProtocol>(&wp_color_manager_v1_interface, 1, "ColorManagement", *PDEBUGCM);
@@ -193,7 +199,7 @@ CProtocolManager::CProtocolManager() {
 
     // ! please read the top of this file before adding another protocol
 
-    for (auto const& b : g_pCompositor->m_pAqBackend->getImplementations()) {
+    for (auto const& b : g_pCompositor->m_aqBackend->getImplementations()) {
         if (b->type() != Aquamarine::AQ_BACKEND_DRM)
             continue;
 
@@ -261,6 +267,7 @@ CProtocolManager::~CProtocolManager() {
     PROTO::xwaylandShell.reset();
     PROTO::screencopy.reset();
     PROTO::toplevelExport.reset();
+    PROTO::toplevelMapping.reset();
     PROTO::globalShortcuts.reset();
     PROTO::xdgDialog.reset();
     PROTO::singlePixel.reset();
@@ -271,6 +278,8 @@ CProtocolManager::~CProtocolManager() {
     PROTO::colorManagement.reset();
     PROTO::xxColorManagement.reset();
     PROTO::frogColorManagement.reset();
+    PROTO::xdgTag.reset();
+    PROTO::xdgBell.reset();
 
     PROTO::lease.reset();
     PROTO::sync.reset();
@@ -321,12 +330,14 @@ bool CProtocolManager::isGlobalPrivileged(const wl_global* global) {
         PROTO::xdgDialog->getGlobal(),
         PROTO::singlePixel->getGlobal(),
         PROTO::primarySelection->getGlobal(),
-			  PROTO::hyprlandSurface->getGlobal(),
+		PROTO::hyprlandSurface->getGlobal(),
+		PROTO::xdgTag->getGlobal(),
+		PROTO::xdgBell->getGlobal(),
         PROTO::sync     ? PROTO::sync->getGlobal()      : nullptr,
         PROTO::mesaDRM  ? PROTO::mesaDRM->getGlobal()   : nullptr,
         PROTO::linuxDma ? PROTO::linuxDma->getGlobal()  : nullptr,
     };
     // clang-format on
 
-    return std::find(ALLOWED_WHITELIST.begin(), ALLOWED_WHITELIST.end(), global) == ALLOWED_WHITELIST.end();
+    return std::ranges::find(ALLOWED_WHITELIST, global) == ALLOWED_WHITELIST.end();
 }

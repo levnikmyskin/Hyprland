@@ -65,6 +65,23 @@ env = XCURSOR_SIZE,24
 env = HYPRCURSOR_SIZE,24
 
 
+###################
+### PERMISSIONS ###
+###################
+
+# See https://wiki.hyprland.org/Configuring/Permissions/
+# Please note permission changes here require a Hyprland restart and are not applied on-the-fly
+# for security reasons
+
+# ecosystem {
+#   enforce_permissions = 1
+# }
+
+# permission = /usr/(bin|local/bin)/grim, screencopy, allow
+# permission = /usr/(lib|libexec|lib64)/xdg-desktop-portal-hyprland, screencopy, allow
+# permission = /usr/(bin|local/bin)/hyprpm, plugin, allow
+
+
 #####################
 ### LOOK AND FEEL ###
 #####################
@@ -273,8 +290,8 @@ bindel = ,XF86AudioRaiseVolume, exec, wpctl set-volume -l 1 @DEFAULT_AUDIO_SINK@
 bindel = ,XF86AudioLowerVolume, exec, wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
 bindel = ,XF86AudioMute, exec, wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
 bindel = ,XF86AudioMicMute, exec, wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle
-bindel = ,XF86MonBrightnessUp, exec, brightnessctl s 10%+
-bindel = ,XF86MonBrightnessDown, exec, brightnessctl s 10%-
+bindel = ,XF86MonBrightnessUp, exec, brightnessctl -e4 -n2 set 5%+
+bindel = ,XF86MonBrightnessDown, exec, brightnessctl -e4 -n2 set 5%-
 
 # Requires playerctl
 bindl = , XF86AudioNext, exec, playerctl next

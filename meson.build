@@ -33,9 +33,9 @@ endif
 
 aquamarine = dependency('aquamarine', version: '>=0.8.0')
 hyprcursor = dependency('hyprcursor', version: '>=0.1.7')
-hyprgraphics = dependency('hyprgraphics', version: '>= 0.1.1')
+hyprgraphics = dependency('hyprgraphics', version: '>= 0.1.3')
 hyprlang = dependency('hyprlang', version: '>= 0.3.2')
-hyprutils = dependency('hyprutils', version: '>= 0.2.3')
+hyprutils = dependency('hyprutils', version: '>= 0.7.0')
 aquamarine_version_list = aquamarine.version().split('.')
 add_project_arguments(['-DAQUAMARINE_VERSION="@0@"'.format(aquamarine.version())], language: 'cpp')
 add_project_arguments(['-DAQUAMARINE_VERSION_MAJOR=@0@'.format(aquamarine_version_list.get(0))], language: 'cpp')
@@ -87,9 +87,11 @@ endif
 
 # Generate hyprland version and populate version.h
 run_command('sh', '-c', 'scripts/generateVersion.sh', check: true)
+# Make shader files includable
+run_command('sh', '-c', 'scripts/generateShaderIncludes.sh', check: true)
 
 # Install headers
-globber = run_command('find', 'src', '-name', '*.h*', '-o', '-name', '*.frag', check: true)
+globber = run_command('find', 'src', '-name', '*.h*', '-o', '-name', '*.inc', check: true)
 headers = globber.stdout().strip().split('\n')
 foreach file : headers
   install_headers(file, subdir: 'hyprland', preserve_path: true)

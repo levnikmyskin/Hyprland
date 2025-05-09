@@ -15,6 +15,7 @@
 #include "wayland.hpp"
 #include "../../helpers/signal/Signal.hpp"
 #include "../../helpers/math/Math.hpp"
+#include "../../helpers/time/Time.hpp"
 #include "../types/DataDevice.hpp"
 #include <hyprutils/os/FileDescriptor.hpp>
 
@@ -39,17 +40,15 @@ class CWLDataOfferResource : public IDataOffer {
     virtual SP<CX11DataOffer>        getX11();
     virtual SP<IDataSource>          getSource();
 
-    WP<IDataSource>                  source;
-    WP<CWLDataOfferResource>         self;
+    WP<IDataSource>                  m_source;
+    WP<CWLDataOfferResource>         m_self;
 
-    bool                             dead     = false;
-    bool                             accepted = false;
-    bool                             recvd    = false;
-
-    uint32_t                         actions = 0;
+    bool                             m_dead     = false;
+    bool                             m_accepted = false;
+    bool                             m_recvd    = false;
 
   private:
-    SP<CWlDataOffer> resource;
+    SP<CWlDataOffer> m_resource;
 
     friend class CWLDataDeviceResource;
 };
@@ -75,19 +74,19 @@ class CWLDataSourceResource : public IDataSource {
     virtual void                     sendDndDropPerformed();
     virtual void                     sendDndAction(wl_data_device_manager_dnd_action a);
 
-    bool                             used       = false;
-    bool                             dnd        = false;
-    bool                             dndSuccess = false;
-    bool                             dropped    = false;
+    bool                             m_used       = false;
+    bool                             m_dnd        = false;
+    bool                             m_dndSuccess = false;
+    bool                             m_dropped    = false;
 
-    WP<CWLDataDeviceResource>        device;
-    WP<CWLDataSourceResource>        self;
+    WP<CWLDataDeviceResource>        m_device;
+    WP<CWLDataSourceResource>        m_self;
 
-    std::vector<std::string>         mimeTypes;
-    uint32_t                         supportedActions = 0;
+    std::vector<std::string>         m_mimeTypes;
+    uint32_t                         m_supportedActions = 0;
 
   private:
-    SP<CWlDataSource> resource;
+    SP<CWlDataSource> m_resource;
 
     friend class CWLDataDeviceProtocol;
 };
@@ -109,11 +108,11 @@ class CWLDataDeviceResource : public IDataDevice {
     virtual void                      sendSelection(SP<IDataOffer> offer);
     virtual eDataSourceType           type();
 
-    WP<CWLDataDeviceResource>         self;
+    WP<CWLDataDeviceResource>         m_self;
 
   private:
-    SP<CWlDataDevice> resource;
-    wl_client*        pClient = nullptr;
+    SP<CWlDataDevice> m_resource;
+    wl_client*        m_client = nullptr;
 
     friend class CWLDataDeviceProtocol;
 };
@@ -124,11 +123,11 @@ class CWLDataDeviceManagerResource {
 
     bool                                   good();
 
-    WP<CWLDataDeviceResource>              device;
-    std::vector<WP<CWLDataSourceResource>> sources;
+    WP<CWLDataDeviceResource>              m_device;
+    std::vector<WP<CWLDataSourceResource>> m_sources;
 
   private:
-    SP<CWlDataDeviceManager> resource;
+    SP<CWlDataDeviceManager> m_resource;
 };
 
 class CWLDataDeviceProtocol : public IWaylandProtocol {
@@ -138,7 +137,7 @@ class CWLDataDeviceProtocol : public IWaylandProtocol {
     virtual void bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id);
 
     // renders and damages the dnd icon, if present
-    void renderDND(PHLMONITOR pMonitor, timespec* when);
+    void renderDND(PHLMONITOR pMonitor, const Time::steady_tp& when);
     // for inputmgr to force refocus
     // TODO: move handling to seatmgr
     bool dndActive();
@@ -153,10 +152,10 @@ class CWLDataDeviceProtocol : public IWaylandProtocol {
     void destroyResource(CWLDataOfferResource* resource);
 
     //
-    std::vector<SP<CWLDataDeviceManagerResource>> m_vManagers;
-    std::vector<SP<CWLDataDeviceResource>>        m_vDevices;
-    std::vector<SP<CWLDataSourceResource>>        m_vSources;
-    std::vector<SP<CWLDataOfferResource>>         m_vOffers;
+    std::vector<SP<CWLDataDeviceManagerResource>> m_managers;
+    std::vector<SP<CWLDataDeviceResource>>        m_devices;
+    std::vector<SP<CWLDataSourceResource>>        m_sources;
+    std::vector<SP<CWLDataOfferResource>>         m_offers;
 
     //
 
@@ -181,7 +180,7 @@ class CWLDataDeviceProtocol : public IWaylandProtocol {
         SP<HOOK_CALLBACK_FN> mouseButton;
         SP<HOOK_CALLBACK_FN> touchUp;
         SP<HOOK_CALLBACK_FN> touchMove;
-    } dnd;
+    } m_dnd;
 
     void abortDrag();
     void initiateDrag(WP<CWLDataSourceResource> currentSource, SP<CWLSurfaceResource> dragSurface, SP<CWLSurfaceResource> origin);
@@ -203,7 +202,7 @@ class CWLDataDeviceProtocol : public IWaylandProtocol {
     struct {
         CHyprSignalListener onKeyboardFocusChange;
         CHyprSignalListener onDndPointerFocusChange;
-    } listeners;
+    } m_listeners;
 };
 
 namespace PROTO {

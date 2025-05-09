@@ -1,13 +1,13 @@
 wayland_protos = dependency(
 	'wayland-protocols',
-	version: '>=1.41',
+	version: '>=1.43',
 	fallback: 'wayland-protocols',
 	default_options: ['tests=false'],
 )
 
 hyprland_protos = dependency(
 	'hyprland-protocols',
-	version: '>=0.6.2',
+	version: '>=0.6.4',
 	fallback: 'hyprland-protocols',
 )
 
@@ -37,6 +37,7 @@ protocols = [
 	'frog-color-management-v1.xml',
 	hyprland_protocol_dir / 'protocols/hyprland-global-shortcuts-v1.xml',
 	hyprland_protocol_dir / 'protocols/hyprland-toplevel-export-v1.xml',
+	hyprland_protocol_dir / 'protocols/hyprland-toplevel-mapping-v1.xml',
 	hyprland_protocol_dir / 'protocols/hyprland-focus-grab-v1.xml',
 	hyprland_protocol_dir / 'protocols/hyprland-ctm-control-v1.xml',
 	hyprland_protocol_dir / 'protocols/hyprland-surface-v1.xml',
@@ -72,6 +73,8 @@ protocols = [
 	wayland_protocol_dir / 'staging/security-context/security-context-v1.xml',
 	wayland_protocol_dir / 'staging/content-type/content-type-v1.xml',
 	wayland_protocol_dir / 'staging/color-management/color-management-v1.xml',
+	wayland_protocol_dir / 'staging/xdg-toplevel-tag/xdg-toplevel-tag-v1.xml',
+	wayland_protocol_dir / 'staging/xdg-system-bell/xdg-system-bell-v1.xml',
 ]
 
 wl_protocols = []

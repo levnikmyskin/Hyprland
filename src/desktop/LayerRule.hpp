@@ -14,6 +14,7 @@ class CLayerRule {
         RULE_BLUR,
         RULE_BLURPOPUPS,
         RULE_DIMAROUND,
+        RULE_ABOVELOCK,
         RULE_IGNOREALPHA,
         RULE_IGNOREZERO,
         RULE_XRAY,
@@ -22,10 +23,10 @@ class CLayerRule {
         RULE_ZUMBA,
     };
 
-    eRuleType           ruleType = RULE_INVALID;
+    eRuleType           m_ruleType = RULE_INVALID;
 
-    const std::string   targetNamespace;
-    const std::string   rule;
+    const std::string   m_targetNamespace;
+    const std::string   m_rule;
 
-    CRuleRegexContainer targetNamespaceRegex;
+    CRuleRegexContainer m_targetNamespaceRegex;
 };

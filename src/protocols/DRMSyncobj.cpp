@@ -45,154 +45,96 @@ void CDRMSyncPointState::signal() {
 }
 
 CDRMSyncobjSurfaceResource::CDRMSyncobjSurfaceResource(UP<CWpLinuxDrmSyncobjSurfaceV1>&& resource_, SP<CWLSurfaceResource> surface_) :
-    surface(surface_), resource(std::move(resource_)) {
+    m_surface(surface_), m_resource(std::move(resource_)) {
     if UNLIKELY (!good())
         return;
 
-    resource->setData(this);
+    m_resource->setData(this);
 
-    resource->setOnDestroy([this](CWpLinuxDrmSyncobjSurfaceV1* r) { PROTO::sync->destroyResource(this); });
-    resource->setDestroy([this](CWpLinuxDrmSyncobjSurfaceV1* r) { PROTO::sync->destroyResource(this); });
+    m_resource->setOnDestroy([this](CWpLinuxDrmSyncobjSurfaceV1* r) { PROTO::sync->destroyResource(this); });
+    m_resource->setDestroy([this](CWpLinuxDrmSyncobjSurfaceV1* r) { PROTO::sync->destroyResource(this); });
 
-    resource->setSetAcquirePoint([this](CWpLinuxDrmSyncobjSurfaceV1* r, wl_resource* timeline_, uint32_t hi, uint32_t lo) {
-        if (!surface) {
-            resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_SURFACE, "Surface is gone");
+    m_resource->setSetAcquirePoint([this](CWpLinuxDrmSyncobjSurfaceV1* r, wl_resource* timeline_, uint32_t hi, uint32_t lo) {
+        if (!m_surface) {
+            m_resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_SURFACE, "Surface is gone");
             return;
         }
 
-        auto timeline  = CDRMSyncobjTimelineResource::fromResource(timeline_);
-        pendingAcquire = {timeline->timeline, ((uint64_t)hi << 32) | (uint64_t)lo};
+        auto timeline    = CDRMSyncobjTimelineResource::fromResource(timeline_);
+        m_pendingAcquire = {timeline->m_timeline, ((uint64_t)hi << 32) | (uint64_t)lo};
     });
 
-    resource->setSetReleasePoint([this](CWpLinuxDrmSyncobjSurfaceV1* r, wl_resource* timeline_, uint32_t hi, uint32_t lo) {
-        if (!surface) {
-            resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_SURFACE, "Surface is gone");
+    m_resource->setSetReleasePoint([this](CWpLinuxDrmSyncobjSurfaceV1* r, wl_resource* timeline_, uint32_t hi, uint32_t lo) {
+        if (!m_surface) {
+            m_resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_SURFACE, "Surface is gone");
             return;
         }
 
-        auto timeline  = CDRMSyncobjTimelineResource::fromResource(timeline_);
-        pendingRelease = {timeline->timeline, ((uint64_t)hi << 32) | (uint64_t)lo};
+        auto timeline    = CDRMSyncobjTimelineResource::fromResource(timeline_);
+        m_pendingRelease = {timeline->m_timeline, ((uint64_t)hi << 32) | (uint64_t)lo};
     });
 
-    listeners.surfacePrecommit = surface->events.precommit.registerListener([this](std::any d) {
-        const bool PENDING_HAS_NEW_BUFFER = surface->pending.updated & SSurfaceState::eUpdatedProperties::SURFACE_UPDATED_BUFFER;
-
-        if (!surface->pending.buffer && PENDING_HAS_NEW_BUFFER && !surface->pending.texture) {
-            removeAllWaiters();
-            surface->commitPendingState(surface->pending);
-            return; // null buffer attached.
-        }
-
-        if (!surface->pending.buffer && !PENDING_HAS_NEW_BUFFER && surface->current.buffer) {
-            surface->current.bufferDamage.clear();
-            surface->current.damage.clear();
-            surface->commitPendingState(surface->current);
-            return; // no new buffer, but we still have current around and a commit happend, commit current again.
-        }
-
-        if (!surface->pending.buffer && !PENDING_HAS_NEW_BUFFER && !surface->current.buffer) {
-            surface->commitPendingState(surface->pending); // no pending buffer, no current buffer. probably first commit
+    m_listeners.surfacePrecommit = m_surface->m_events.precommit.registerListener([this](std::any d) {
+        if (!m_surface->m_pending.updated.buffer || !m_surface->m_pending.buffer) {
+            if (m_pendingAcquire.timeline() || m_pendingRelease.timeline()) {
+                m_resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_BUFFER, "Missing buffer");
+                m_surface->m_pending.rejected = true;
+            }
             return;
         }
 
-        if (pendingAcquire.timeline()) {
-            surface->pending.buffer->acquire = makeUnique<CDRMSyncPointState>(std::move(pendingAcquire));
-            pendingAcquire                   = {};
-        }
-
-        if (pendingRelease.timeline()) {
-            surface->pending.buffer->release = makeUnique<CDRMSyncPointState>(std::move(pendingRelease));
-            pendingRelease                   = {};
-        }
-
-        if (protocolError())
+        if (!m_pendingAcquire.timeline()) {
+            m_resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_ACQUIRE_POINT, "Missing acquire timeline");
+            m_surface->m_pending.rejected = true;
             return;
+        }
 
-        const auto& state = pendingStates.emplace_back(makeShared<SSurfaceState>(surface->pending));
-        surface->pending.damage.clear();
-        surface->pending.bufferDamage.clear();
-        surface->pending.updated &= ~SSurfaceState::eUpdatedProperties::SURFACE_UPDATED_BUFFER;
-        surface->pending.updated &= ~SSurfaceState::eUpdatedProperties::SURFACE_UPDATED_DAMAGE;
-        surface->pending.buffer.reset();
+        if (!m_pendingRelease.timeline()) {
+            m_resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_RELEASE_POINT, "Missing release timeline");
+            m_surface->m_pending.rejected = true;
+            return;
+        }
 
-        state->buffer->buffer->syncReleaser = state->buffer->release->createSyncRelease();
-        state->buffer->acquire->addWaiter([this, surf = surface, wp = CWeakPointer<SSurfaceState>(*std::prev(pendingStates.end()))] {
-            if (!surf)
-                return;
+        if (m_pendingAcquire.timeline() == m_pendingRelease.timeline() && m_pendingAcquire.point() >= m_pendingRelease.point()) {
+            m_resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_CONFLICTING_POINTS, "Acquire and release points are on the same timeline, and acquire >= release");
+            m_surface->m_pending.rejected = true;
+            return;
+        }
 
-            surf->commitPendingState(*wp.lock());
-            std::erase(pendingStates, wp);
-        });
+        m_surface->m_pending.updated.acquire = true;
+        m_surface->m_pending.acquire         = m_pendingAcquire;
+        m_pendingAcquire                     = {};
+
+        m_surface->m_pending.buffer->addReleasePoint(m_pendingRelease);
+        m_pendingRelease = {};
     });
-}
-
-void CDRMSyncobjSurfaceResource::removeAllWaiters() {
-    for (auto& s : pendingStates) {
-        if (s && s->buffer && s->buffer->acquire)
-            s->buffer->acquire->timeline()->removeAllWaiters();
-    }
-
-    pendingStates.clear();
-}
-
-CDRMSyncobjSurfaceResource::~CDRMSyncobjSurfaceResource() {
-    removeAllWaiters();
-}
-
-bool CDRMSyncobjSurfaceResource::protocolError() {
-    if (!surface->pending.buffer) {
-        resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_BUFFER, "Missing buffer");
-        surface->pending.rejected = true;
-        return true;
-    }
-
-    if (!surface->pending.buffer->acquire || !surface->pending.buffer->acquire->timeline()) {
-        resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_ACQUIRE_POINT, "Missing acquire timeline");
-        surface->pending.rejected = true;
-        return true;
-    }
-
-    if (!surface->pending.buffer->release || !surface->pending.buffer->release->timeline()) {
-        resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_NO_RELEASE_POINT, "Missing release timeline");
-        surface->pending.rejected = true;
-        return true;
-    }
-
-    if (surface->pending.buffer->acquire->timeline() == surface->pending.buffer->release->timeline()) {
-        if (surface->pending.buffer->acquire->point() >= surface->pending.buffer->release->point()) {
-            resource->error(WP_LINUX_DRM_SYNCOBJ_SURFACE_V1_ERROR_CONFLICTING_POINTS, "Acquire and release points are on the same timeline, and acquire >= release");
-            surface->pending.rejected = true;
-            return true;
-        }
-    }
-
-    return false;
 }
 
 bool CDRMSyncobjSurfaceResource::good() {
-    return resource->resource();
+    return m_resource->resource();
 }
 
-CDRMSyncobjTimelineResource::CDRMSyncobjTimelineResource(UP<CWpLinuxDrmSyncobjTimelineV1>&& resource_, CFileDescriptor&& fd_) : fd(std::move(fd_)), resource(std::move(resource_)) {
+CDRMSyncobjTimelineResource::CDRMSyncobjTimelineResource(UP<CWpLinuxDrmSyncobjTimelineV1>&& resource_, CFileDescriptor&& fd_) :
+    m_fd(std::move(fd_)), m_resource(std::move(resource_)) {
     if UNLIKELY (!good())
         return;
 
-    resource->setData(this);
+    m_resource->setData(this);
 
-    resource->setOnDestroy([this](CWpLinuxDrmSyncobjTimelineV1* r) { PROTO::sync->destroyResource(this); });
-    resource->setDestroy([this](CWpLinuxDrmSyncobjTimelineV1* r) { PROTO::sync->destroyResource(this); });
+    m_resource->setOnDestroy([this](CWpLinuxDrmSyncobjTimelineV1* r) { PROTO::sync->destroyResource(this); });
+    m_resource->setDestroy([this](CWpLinuxDrmSyncobjTimelineV1* r) { PROTO::sync->destroyResource(this); });
 
-    timeline = CSyncTimeline::create(PROTO::sync->drmFD, std::move(fd));
+    m_timeline = CSyncTimeline::create(PROTO::sync->m_drmFD, std::move(m_fd));
 
-    if (!timeline) {
-        resource->error(WP_LINUX_DRM_SYNCOBJ_MANAGER_V1_ERROR_INVALID_TIMELINE, "Timeline failed importing");
+    if (!m_timeline) {
+        m_resource->error(WP_LINUX_DRM_SYNCOBJ_MANAGER_V1_ERROR_INVALID_TIMELINE, "Timeline failed importing");
         return;
     }
 }
 
 WP<CDRMSyncobjTimelineResource> CDRMSyncobjTimelineResource::fromResource(wl_resource* res) {
-    for (const auto& r : PROTO::sync->m_vTimelines) {
-        if (r && r->resource && r->resource->resource() == res)
+    for (const auto& r : PROTO::sync->m_timelines) {
+        if (r && r->m_resource && r->m_resource->resource() == res)
             return r;
     }
 
@@ -200,52 +142,52 @@ WP<CDRMSyncobjTimelineResource> CDRMSyncobjTimelineResource::fromResource(wl_res
 }
 
 bool CDRMSyncobjTimelineResource::good() {
-    return resource->resource();
+    return m_resource->resource();
 }
 
-CDRMSyncobjManagerResource::CDRMSyncobjManagerResource(UP<CWpLinuxDrmSyncobjManagerV1>&& resource_) : resource(std::move(resource_)) {
+CDRMSyncobjManagerResource::CDRMSyncobjManagerResource(UP<CWpLinuxDrmSyncobjManagerV1>&& resource_) : m_resource(std::move(resource_)) {
     if UNLIKELY (!good())
         return;
 
-    resource->setOnDestroy([this](CWpLinuxDrmSyncobjManagerV1* r) { PROTO::sync->destroyResource(this); });
-    resource->setDestroy([this](CWpLinuxDrmSyncobjManagerV1* r) { PROTO::sync->destroyResource(this); });
+    m_resource->setOnDestroy([this](CWpLinuxDrmSyncobjManagerV1* r) { PROTO::sync->destroyResource(this); });
+    m_resource->setDestroy([this](CWpLinuxDrmSyncobjManagerV1* r) { PROTO::sync->destroyResource(this); });
 
-    resource->setGetSurface([this](CWpLinuxDrmSyncobjManagerV1* r, uint32_t id, wl_resource* surf) {
+    m_resource->setGetSurface([this](CWpLinuxDrmSyncobjManagerV1* r, uint32_t id, wl_resource* surf) {
         if UNLIKELY (!surf) {
-            resource->error(-1, "Invalid surface");
+            m_resource->error(-1, "Invalid surface");
             return;
         }
 
         auto SURF = CWLSurfaceResource::fromResource(surf);
         if UNLIKELY (!SURF) {
-            resource->error(-1, "Invalid surface (2)");
+            m_resource->error(-1, "Invalid surface (2)");
             return;
         }
 
-        if UNLIKELY (SURF->syncobj) {
-            resource->error(WP_LINUX_DRM_SYNCOBJ_MANAGER_V1_ERROR_SURFACE_EXISTS, "Surface already has a syncobj attached");
+        if UNLIKELY (SURF->m_syncobj) {
+            m_resource->error(WP_LINUX_DRM_SYNCOBJ_MANAGER_V1_ERROR_SURFACE_EXISTS, "Surface already has a syncobj attached");
             return;
         }
 
-        const auto& RESOURCE = PROTO::sync->m_vSurfaces.emplace_back(
-            makeUnique<CDRMSyncobjSurfaceResource>(makeUnique<CWpLinuxDrmSyncobjSurfaceV1>(resource->client(), resource->version(), id), SURF));
+        const auto& RESOURCE = PROTO::sync->m_surfaces.emplace_back(
+            makeUnique<CDRMSyncobjSurfaceResource>(makeUnique<CWpLinuxDrmSyncobjSurfaceV1>(m_resource->client(), m_resource->version(), id), SURF));
         if UNLIKELY (!RESOURCE->good()) {
-            resource->noMemory();
-            PROTO::sync->m_vSurfaces.pop_back();
+            m_resource->noMemory();
+            PROTO::sync->m_surfaces.pop_back();
             return;
         }
 
-        SURF->syncobj = RESOURCE;
+        SURF->m_syncobj = RESOURCE;
 
         LOGM(LOG, "New linux_syncobj at {:x} for surface {:x}", (uintptr_t)RESOURCE.get(), (uintptr_t)SURF.get());
     });
 
-    resource->setImportTimeline([this](CWpLinuxDrmSyncobjManagerV1* r, uint32_t id, int32_t fd) {
-        const auto& RESOURCE = PROTO::sync->m_vTimelines.emplace_back(
-            makeUnique<CDRMSyncobjTimelineResource>(makeUnique<CWpLinuxDrmSyncobjTimelineV1>(resource->client(), resource->version(), id), CFileDescriptor{fd}));
+    m_resource->setImportTimeline([this](CWpLinuxDrmSyncobjManagerV1* r, uint32_t id, int32_t fd) {
+        const auto& RESOURCE = PROTO::sync->m_timelines.emplace_back(
+            makeUnique<CDRMSyncobjTimelineResource>(makeUnique<CWpLinuxDrmSyncobjTimelineV1>(m_resource->client(), m_resource->version(), id), CFileDescriptor{fd}));
         if UNLIKELY (!RESOURCE->good()) {
-            resource->noMemory();
-            PROTO::sync->m_vTimelines.pop_back();
+            m_resource->noMemory();
+            PROTO::sync->m_timelines.pop_back();
             return;
         }
 
@@ -254,29 +196,30 @@ CDRMSyncobjManagerResource::CDRMSyncobjManagerResource(UP<CWpLinuxDrmSyncobjMana
 }
 
 bool CDRMSyncobjManagerResource::good() {
-    return resource->resource();
+    return m_resource->resource();
 }
 
-CDRMSyncobjProtocol::CDRMSyncobjProtocol(const wl_interface* iface, const int& ver, const std::string& name) : IWaylandProtocol(iface, ver, name), drmFD(g_pCompositor->m_iDRMFD) {}
+CDRMSyncobjProtocol::CDRMSyncobjProtocol(const wl_interface* iface, const int& ver, const std::string& name) :
+    IWaylandProtocol(iface, ver, name), m_drmFD(g_pCompositor->m_drmFD) {}
 
 void CDRMSyncobjProtocol::bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id) {
-    const auto& RESOURCE = m_vManagers.emplace_back(makeUnique<CDRMSyncobjManagerResource>(makeUnique<CWpLinuxDrmSyncobjManagerV1>(client, ver, id)));
+    const auto& RESOURCE = m_managers.emplace_back(makeUnique<CDRMSyncobjManagerResource>(makeUnique<CWpLinuxDrmSyncobjManagerV1>(client, ver, id)));
 
     if UNLIKELY (!RESOURCE->good()) {
         wl_client_post_no_memory(client);
-        m_vManagers.pop_back();
+        m_managers.pop_back();
         return;
     }
 }
 
 void CDRMSyncobjProtocol::destroyResource(CDRMSyncobjManagerResource* resource) {
-    std::erase_if(m_vManagers, [resource](const auto& e) { return e.get() == resource; });
+    std::erase_if(m_managers, [resource](const auto& e) { return e.get() == resource; });
 }
 
 void CDRMSyncobjProtocol::destroyResource(CDRMSyncobjTimelineResource* resource) {
-    std::erase_if(m_vTimelines, [resource](const auto& e) { return e.get() == resource; });
+    std::erase_if(m_timelines, [resource](const auto& e) { return e.get() == resource; });
 }
 
 void CDRMSyncobjProtocol::destroyResource(CDRMSyncobjSurfaceResource* resource) {
-    std::erase_if(m_vSurfaces, [resource](const auto& e) { return e.get() == resource; });
+    std::erase_if(m_surfaces, [resource](const auto& e) { return e.get() == resource; });
 }

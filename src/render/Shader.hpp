@@ -3,24 +3,26 @@
 #include "../defines.hpp"
 #include <unordered_map>
 
-class CShader {
-  public:
-    ~CShader();
+struct SShader {
+    ~SShader();
 
     GLuint  program           = 0;
     GLint   proj              = -1;
     GLint   color             = -1;
     GLint   alphaMatte        = -1;
     GLint   texType           = -1;
+    GLint   skipCM            = -1;
     GLint   sourceTF          = -1;
     GLint   targetTF          = -1;
-    GLint   sourcePrimaries   = -1;
+    GLint   srcTFRange        = -1;
+    GLint   dstTFRange        = -1;
     GLint   targetPrimaries   = -1;
     GLint   maxLuminance      = -1;
     GLint   dstMaxLuminance   = -1;
     GLint   dstRefLuminance   = -1;
     GLint   sdrSaturation     = -1; // sdr -> hdr saturation
     GLint   sdrBrightness     = -1; // sdr -> hdr brightness multiplier
+    GLint   convertMatrix     = -1;
     GLint   tex               = -1;
     GLint   alpha             = -1;
     GLint   posAttrib         = -1;
@@ -74,10 +76,5 @@ class CShader {
     GLint brightness = -1;
     GLint noise      = -1;
 
-    GLint getUniformLocation(const std::string&);
-
     void  destroy();
-
-  private:
-    std::unordered_map<std::string, GLint> m_muUniforms;
 };

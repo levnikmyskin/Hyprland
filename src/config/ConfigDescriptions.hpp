@@ -372,6 +372,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
     },
+    SConfigOptionDescription{
+        .value       = "animations:workspace_wraparound",
+        .description = "changes the direction of slide animations between the first and last workspaces",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
 
     /*
      * input:
@@ -898,6 +904,18 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .data        = SConfigOptionDescription::SStringData{STRVAL_EMPTY}, //##TODO UNSET?
     },
     SConfigOptionDescription{
+        .value       = "group:groupbar:font_weight_active",
+        .description = "weight of the font used to display active groupbar titles",
+        .type        = CONFIG_OPTION_STRING_SHORT,
+        .data        = SConfigOptionDescription::SStringData{"normal"},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:font_weight_inactive",
+        .description = "weight of the font used to display inactive groupbar titles",
+        .type        = CONFIG_OPTION_STRING_SHORT,
+        .data        = SConfigOptionDescription::SStringData{"normal"},
+    },
+    SConfigOptionDescription{
         .value       = "group:groupbar:font_size",
         .description = "font size of groupbar title",
         .type        = CONFIG_OPTION_INT,
@@ -914,6 +932,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .description = "height of the groupbar",
         .type        = CONFIG_OPTION_INT,
         .data        = SConfigOptionDescription::SRangeData{14, 1, 64},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:indicator_gap",
+        .description = "height of the gap between the groupbar indicator and title",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{0, 0, 64},
     },
     SConfigOptionDescription{
         .value       = "group:groupbar:indicator_height",
@@ -1010,6 +1034,18 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .description = "gap between gradients",
         .type        = CONFIG_OPTION_INT,
         .data        = SConfigOptionDescription::SRangeData{2, 0, 20},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:keep_upper_gap",
+        .description = "keep an upper gap above gradient",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
+    SConfigOptionDescription{
+        .value       = "group:groupbar:text_offset",
+        .description = "set an offset for a text",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SRangeData{0, -20, 20},
     },
 
     /*
@@ -1223,6 +1259,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
     },
+    SConfigOptionDescription{
+        .value       = "misc:anr_missed_pings",
+        .description = "number of missed pings before showing the ANR dialog",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{1, 1, 10},
+    },
 
     /*
      * binds:
@@ -1243,6 +1285,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
     SConfigOptionDescription{
         .value       = "binds:workspace_back_and_forth",
         .description = "If enabled, an attempt to switch to the currently focused workspace will instead switch to the previous workspace. Akin to i3’s auto_back_and_forth.",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "binds:hide_special_on_workspace_change",
+        .description = "If enabled, changing the active workspace (including to itself) will hide the special workspace on the monitor where the newly active workspace resides.",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
     },
@@ -1301,6 +1349,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .description = "Allows fullscreen to pinned windows, and restore their pinned status afterwards",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
+    },
+    SConfigOptionDescription{
+        .value       = "binds:drag_threshold",
+        .description = "Movement threshold in pixels for window dragging and c/g bind flags. 0 to disable and grab on mousedown.",
+        .type        = CONFIG_OPTION_INT,
+        .data        = SConfigOptionDescription::SRangeData{0, 0, INT_MAX},
     },
 
     /*
@@ -1396,6 +1450,12 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{true},
     },
+    SConfigOptionDescription{
+        .value       = "render:send_content_type",
+        .description = "Report content type to allow monitor profile autoswitch (may result in a black screen during the switch)",
+        .type        = CONFIG_OPTION_BOOL,
+        .data        = SConfigOptionDescription::SBoolData{true},
+    },
 
     /*
      * cursor:
@@ -1447,6 +1507,13 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
     SConfigOptionDescription{
         .value       = "cursor:warp_on_change_workspace",
         .description = "Move the cursor to the last focused window after changing the workspace. Options: 0 (Disabled), 1 (Enabled), 2 (Force - ignores cursor:no_warps option)",
+        .type        = CONFIG_OPTION_CHOICE,
+        .data        = SConfigOptionDescription::SChoiceData{0, "Disabled,Enabled,Force"},
+    },
+    SConfigOptionDescription{
+        .value       = "cursor:warp_on_toggle_special",
+        .description = "Move the cursor to the last focused window when toggling a special workspace. Options: 0 (Disabled), 1 (Enabled), "
+                       "2 (Force - ignores cursor:no_warps option)",
         .type        = CONFIG_OPTION_CHOICE,
         .data        = SConfigOptionDescription::SChoiceData{0, "Disabled,Enabled,Force"},
     },
@@ -1573,12 +1640,6 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .description = "if true, do not display config file parsing errors.",
         .type        = CONFIG_OPTION_BOOL,
         .data        = SConfigOptionDescription::SBoolData{false},
-    },
-    SConfigOptionDescription{
-        .value       = "debug:watchdog_timeout",
-        .description = "sets the timeout in seconds for watchdog to abort processing of a signal of the main thread. Set to 0 to disable.",
-        .type        = CONFIG_OPTION_INT,
-        .data        = SConfigOptionDescription::SRangeData{5, 0, 20},
     },
     SConfigOptionDescription{
         .value       = "debug:disable_scale_checks",
@@ -1756,12 +1817,10 @@ inline static const std::vector<SConfigOptionDescription> CONFIG_OPTIONS = {
         .type        = CONFIG_OPTION_INT,
         .data        = SConfigOptionDescription::SRangeData{2, 0, 10}, //##TODO RANGE?
     },
-    SConfigOptionDescription{
-        .value       = "master:center_master_slaves_on_right",
-        .description = "set if the slaves should appear on right of master when slave_count_for_center_master > 2",
-        .type        = CONFIG_OPTION_BOOL,
-        .data        = SConfigOptionDescription::SBoolData{true},
-    },
+    SConfigOptionDescription{.value       = "master:center_master_fallback",
+                             .description = "Set fallback for center master when slaves are less than slave_count_for_center_master, can be left ,right ,top ,bottom",
+                             .type        = CONFIG_OPTION_STRING_SHORT,
+                             .data        = SConfigOptionDescription::SStringData{"left"}},
     SConfigOptionDescription{
         .value       = "master:center_ignores_reserved",
         .description = "centers the master window on monitor ignoring reserved areas",

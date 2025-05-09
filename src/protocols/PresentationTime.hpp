@@ -4,6 +4,7 @@
 #include <cstdint>
 #include "WaylandProtocol.hpp"
 #include "presentation-time.hpp"
+#include "../helpers/time/Time.hpp"
 
 class CMonitor;
 class CWLSurfaceResource;
@@ -18,13 +19,13 @@ class CQueuedPresentationData {
     void presented();
     void discarded();
 
-    bool done = false;
+    bool m_done = false;
 
   private:
-    bool                   wasPresented = false;
-    bool                   zeroCopy     = false;
-    PHLMONITORREF          pMonitor;
-    WP<CWLSurfaceResource> surface;
+    bool                   m_wasPresented = false;
+    bool                   m_zeroCopy     = false;
+    PHLMONITORREF          m_monitor;
+    WP<CWLSurfaceResource> m_surface;
 
     friend class CPresentationFeedback;
     friend class CPresentationProtocol;
@@ -36,12 +37,12 @@ class CPresentationFeedback {
 
     bool good();
 
-    void sendQueued(SP<CQueuedPresentationData> data, timespec* when, uint32_t untilRefreshNs, uint64_t seq, uint32_t reportedFlags);
+    void sendQueued(SP<CQueuedPresentationData> data, const Time::steady_tp& when, uint32_t untilRefreshNs, uint64_t seq, uint32_t reportedFlags);
 
   private:
-    SP<CWpPresentationFeedback> resource;
-    WP<CWLSurfaceResource>      surface;
-    bool                        done = false;
+    SP<CWpPresentationFeedback> m_resource;
+    WP<CWLSurfaceResource>      m_surface;
+    bool                        m_done = false;
 
     friend class CPresentationProtocol;
 };
@@ -52,7 +53,7 @@ class CPresentationProtocol : public IWaylandProtocol {
 
     virtual void bindManager(wl_client* client, void* data, uint32_t ver, uint32_t id);
 
-    void         onPresented(PHLMONITOR pMonitor, timespec* when, uint32_t untilRefreshNs, uint64_t seq, uint32_t reportedFlags);
+    void         onPresented(PHLMONITOR pMonitor, const Time::steady_tp& when, uint32_t untilRefreshNs, uint64_t seq, uint32_t reportedFlags);
     void         queueData(SP<CQueuedPresentationData> data);
 
   private:
@@ -61,9 +62,9 @@ class CPresentationProtocol : public IWaylandProtocol {
     void onGetFeedback(CWpPresentation* pMgr, wl_resource* surf, uint32_t id);
 
     //
-    std::vector<UP<CWpPresentation>>         m_vManagers;
-    std::vector<SP<CPresentationFeedback>>   m_vFeedbacks;
-    std::vector<SP<CQueuedPresentationData>> m_vQueue;
+    std::vector<UP<CWpPresentation>>         m_managers;
+    std::vector<SP<CPresentationFeedback>>   m_feedbacks;
+    std::vector<SP<CQueuedPresentationData>> m_queue;
 
     friend class CPresentationFeedback;
 };

@@ -1,22 +1,41 @@
 #include "DataState.hpp"
+#include <sys/stat.h>
 #include <toml++/toml.hpp>
 #include <print>
+#include <sstream>
 #include <fstream>
 #include "PluginManager.hpp"
+#include "../helpers/Die.hpp"
+#include "../helpers/Sys.hpp"
+#include "../helpers/StringUtils.hpp"
 
-std::filesystem::path DataState::getDataStatePath() {
-    const auto HOME = getenv("HOME");
-    if (!HOME) {
-        std::println(stderr, "DataState: no $HOME");
-        throw std::runtime_error("no $HOME");
-        return "";
+static std::string getTempRoot() {
+    static auto ENV = getenv("XDG_RUNTIME_DIR");
+    if (!ENV) {
+        std::cerr << "\nERROR: XDG_RUNTIME_DIR not set!\n";
+        exit(1);
     }
 
-    const auto XDG_DATA_HOME = getenv("XDG_DATA_HOME");
+    const auto STR = ENV + std::string{"/hyprpm/"};
 
-    if (XDG_DATA_HOME)
-        return std::filesystem::path{XDG_DATA_HOME} / "hyprpm";
-    return std::filesystem::path{HOME} / ".local/share/hyprpm";
+    return STR;
+}
+
+// write the state to a file
+static bool writeState(const std::string& str, const std::string& to) {
+    // create temp file in a safe temp root
+    std::ofstream of(getTempRoot() + ".temp-state", std::ios::trunc);
+    if (!of.good())
+        return false;
+
+    of << str;
+    of.close();
+
+    return NSys::root::install(getTempRoot() + ".temp-state", to, "644");
+}
+
+std::filesystem::path DataState::getDataStatePath() {
+    return std::filesystem::path("/var/cache/hyprpm/" + g_pPluginManager->m_szUsername);
 }
 
 std::string DataState::getHeadersPath() {
@@ -41,21 +60,32 @@ std::vector<std::filesystem::path> DataState::getPluginStates() {
 }
 
 void DataState::ensureStateStoreExists() {
-    const auto PATH = getDataStatePath();
-
-    if (!std::filesystem::exists(PATH))
-        std::filesystem::create_directories(PATH);
-
-    if (!std::filesystem::exists(getHeadersPath()))
-        std::filesystem::create_directories(getHeadersPath());
+    std::error_code ec;
+    if (!std::filesystem::exists(getHeadersPath(), ec) || ec) {
+        std::println("{}", infoString("The hyprpm state store doesn't exist. Creating now..."));
+        if (!std::filesystem::exists("/var/cache/hyprpm/", ec) || ec) {
+            if (!NSys::root::createDirectory("/var/cache/hyprpm", "755"))
+                Debug::die("ensureStateStoreExists: Failed to run a superuser cmd");
+        }
+        if (!std::filesystem::exists(getDataStatePath(), ec) || ec) {
+            if (!NSys::root::createDirectory(getDataStatePath().string(), "755"))
+                Debug::die("ensureStateStoreExists: Failed to run a superuser cmd");
+        }
+        if (!NSys::root::createDirectory(getHeadersPath(), "755"))
+            Debug::die("ensureStateStoreExists: Failed to run a superuser cmd");
+    }
 }
 
 void DataState::addNewPluginRepo(const SPluginRepository& repo) {
     ensureStateStoreExists();
 
-    const auto PATH = getDataStatePath() / repo.name;
+    const auto      PATH = getDataStatePath() / repo.name;
 
-    std::filesystem::create_directories(PATH);
+    std::error_code ec;
+    if (!std::filesystem::exists(PATH, ec) || ec) {
+        if (!NSys::root::createDirectory(PATH.string(), "755"))
+            Debug::die("addNewPluginRepo: failed to create cache dir");
+    }
     // clang-format off
     auto DATA = toml::table{
         {"repository", toml::table{
@@ -68,9 +98,11 @@ void DataState::addNewPluginRepo(const SPluginRepository& repo) {
     for (auto const& p : repo.plugins) {
         const auto filename = p.name + ".so";
 
-        // copy .so to the good place
-        if (std::filesystem::exists(p.filename))
-            std::filesystem::copy_file(p.filename, PATH / filename);
+        // copy .so to the good place and chmod 755
+        if (std::filesystem::exists(p.filename)) {
+            if (!NSys::root::install(p.filename, (PATH / filename).string(), "0755"))
+                Debug::die("addNewPluginRepo: failed to install so file");
+        }
 
         DATA.emplace(p.name, toml::table{
             {"filename", filename},
@@ -80,15 +112,15 @@ void DataState::addNewPluginRepo(const SPluginRepository& repo) {
     }
     // clang-format on
 
-    std::ofstream ofs(PATH / "state.toml", std::ios::trunc);
-    ofs << DATA;
-    ofs.close();
+    std::stringstream ss;
+    ss << DATA;
+
+    if (!writeState(ss.str(), (PATH / "state.toml").string()))
+        Debug::die("{}", failureString("Failed to write plugin state"));
 }
 
 bool DataState::pluginRepoExists(const std::string& urlOrName) {
     ensureStateStoreExists();
-
-    const auto PATH = getDataStatePath();
 
     for (const auto& stateFile : getPluginStates()) {
         const auto STATE = toml::parse_file(stateFile.c_str());
@@ -105,8 +137,6 @@ bool DataState::pluginRepoExists(const std::string& urlOrName) {
 void DataState::removePluginRepo(const std::string& urlOrName) {
     ensureStateStoreExists();
 
-    const auto PATH = getDataStatePath();
-
     for (const auto& stateFile : getPluginStates()) {
         const auto STATE = toml::parse_file(stateFile.c_str());
         const auto NAME  = STATE["repository"]["name"].value_or("");
@@ -122,7 +152,14 @@ void DataState::removePluginRepo(const std::string& urlOrName) {
                 g_pPluginManager->loadUnloadPlugin(std::filesystem::absolute(file.path()), false);
             }
 
-            std::filesystem::remove_all(stateFile.parent_path());
+            const auto PATH = stateFile.parent_path().string();
+
+            if (!PATH.starts_with("/var/cache/hyprpm") || PATH.contains('\''))
+                return; // WTF?
+
+            // scary!
+            if (!NSys::root::removeRecursive(PATH))
+                Debug::die("removePluginRepo: failed to remove dir");
             return;
         }
     }
@@ -131,9 +168,13 @@ void DataState::removePluginRepo(const std::string& urlOrName) {
 void DataState::updateGlobalState(const SGlobalState& state) {
     ensureStateStoreExists();
 
-    const auto PATH = getDataStatePath();
+    const auto      PATH = getDataStatePath();
 
-    std::filesystem::create_directories(PATH);
+    std::error_code ec;
+    if (!std::filesystem::exists(PATH, ec) || ec) {
+        if (!NSys::root::createDirectory(PATH.string(), "755"))
+            Debug::die("updateGlobalState: failed to create dir");
+    }
     // clang-format off
     auto DATA = toml::table{
         {"state", toml::table{
@@ -143,17 +184,20 @@ void DataState::updateGlobalState(const SGlobalState& state) {
     };
     // clang-format on
 
-    std::ofstream ofs(PATH / "state.toml", std::ios::trunc);
-    ofs << DATA;
-    ofs.close();
+    std::stringstream ss;
+    ss << DATA;
+
+    if (!writeState(ss.str(), (PATH / "state.toml").string()))
+        Debug::die("{}", failureString("Failed to write plugin state"));
 }
 
 SGlobalState DataState::getGlobalState() {
     ensureStateStoreExists();
 
-    const auto stateFile = getDataStatePath() / "state.toml";
+    const auto      stateFile = getDataStatePath() / "state.toml";
 
-    if (!std::filesystem::exists(stateFile))
+    std::error_code ec;
+    if (!std::filesystem::exists(stateFile, ec) || ec)
         return SGlobalState{};
 
     auto         DATA = toml::parse_file(stateFile.c_str());
@@ -167,8 +211,6 @@ SGlobalState DataState::getGlobalState() {
 
 std::vector<SPluginRepository> DataState::getAllRepositories() {
     ensureStateStoreExists();
-
-    const auto                     PATH = getDataStatePath();
 
     std::vector<SPluginRepository> repos;
     for (const auto& stateFile : getPluginStates()) {
@@ -205,8 +247,6 @@ std::vector<SPluginRepository> DataState::getAllRepositories() {
 bool DataState::setPluginEnabled(const std::string& name, bool enabled) {
     ensureStateStoreExists();
 
-    const auto PATH = getDataStatePath();
-
     for (const auto& stateFile : getPluginStates()) {
         const auto STATE = toml::parse_file(stateFile.c_str());
         for (const auto& [key, val] : STATE) {
@@ -224,13 +264,30 @@ bool DataState::setPluginEnabled(const std::string& name, bool enabled) {
             auto modifiedState = STATE;
             (*modifiedState[key].as_table()).insert_or_assign("enabled", enabled);
 
-            std::ofstream state(stateFile, std::ios::trunc);
-            state << modifiedState;
-            state.close();
+            std::stringstream ss;
+            ss << modifiedState;
+
+            if (!writeState(ss.str(), stateFile.string()))
+                Debug::die("{}", failureString("Failed to write plugin state"));
 
             return true;
         }
     }
 
     return false;
+}
+
+void DataState::purgeAllCache() {
+    std::error_code ec;
+    if (!std::filesystem::exists(getDataStatePath()) && !ec) {
+        std::println("{}", infoString("Nothing to do"));
+        return;
+    }
+
+    const auto PATH = getDataStatePath().string();
+    if (PATH.contains('\''))
+        return;
+    // scary!
+    if (!NSys::root::removeRecursive(PATH))
+        Debug::die("Failed to run a superuser cmd");
 }

@@ -1,24 +1,23 @@
 #pragma once
 
-#include <chrono>
 #include <any>
 #include <unordered_map>
 #include <string>
 
 #include "../helpers/memory/Memory.hpp"
+#include "../helpers/time/Time.hpp"
 
 class CUUIDToken {
   public:
-    CUUIDToken(const std::string& uuid_, std::any data_, std::chrono::steady_clock::duration expires);
+    CUUIDToken(const std::string& uuid_, std::any data_, Time::steady_dur expires);
 
     std::string getUUID();
 
-    std::any    data;
+    std::any    m_data;
 
   private:
-    std::string                           uuid;
-
-    std::chrono::steady_clock::time_point expiresAt;
+    std::string     m_uuid;
+    Time::steady_tp m_expiresAt;
 
     friend class CTokenManager;
 };
@@ -32,7 +31,7 @@ class CTokenManager {
     void           removeToken(SP<CUUIDToken> token);
 
   private:
-    std::unordered_map<std::string, SP<CUUIDToken>> m_mTokens;
+    std::unordered_map<std::string, SP<CUUIDToken>> m_tokens;
 };
 
 inline UP<CTokenManager> g_pTokenManager;

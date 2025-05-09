@@ -25,53 +25,53 @@ class CCompositor {
     CCompositor(bool onlyConfig = false);
     ~CCompositor();
 
-    wl_display*                                m_sWLDisplay   = nullptr;
-    wl_event_loop*                             m_sWLEventLoop = nullptr;
-    int                                        m_iDRMFD       = -1;
-    bool                                       m_bInitialized = false;
-    SP<Aquamarine::CBackend>                   m_pAqBackend;
+    wl_display*                                  m_wlDisplay   = nullptr;
+    wl_event_loop*                               m_wlEventLoop = nullptr;
+    int                                          m_drmFD       = -1;
+    bool                                         m_initialized = false;
+    SP<Aquamarine::CBackend>                     m_aqBackend;
 
-    std::string                                m_szHyprTempDataRoot = "";
+    std::string                                  m_hyprTempDataRoot = "";
 
-    std::string                                m_szWLDisplaySocket   = "";
-    std::string                                m_szInstanceSignature = "";
-    std::string                                m_szInstancePath      = "";
-    std::string                                m_szCurrentSplash     = "error";
+    std::string                                  m_wlDisplaySocket   = "";
+    std::string                                  m_instanceSignature = "";
+    std::string                                  m_instancePath      = "";
+    std::string                                  m_currentSplash     = "error";
 
-    std::vector<PHLMONITOR>                    m_vMonitors;
-    std::vector<PHLMONITOR>                    m_vRealMonitors; // for all monitors, even those turned off
-    std::vector<PHLWINDOW>                     m_vWindows;
-    std::vector<PHLLS>                         m_vLayers;
-    std::vector<PHLWORKSPACE>                  m_vWorkspaces;
-    std::vector<PHLWINDOWREF>                  m_vWindowsFadingOut;
-    std::vector<PHLLSREF>                      m_vSurfacesFadingOut;
+    std::vector<PHLMONITOR>                      m_monitors;
+    std::vector<PHLMONITOR>                      m_realMonitors; // for all monitors, even those turned off
+    std::vector<PHLWINDOW>                       m_windows;
+    std::vector<PHLLS>                           m_layers;
+    std::vector<PHLWORKSPACE>                    m_workspaces;
+    std::vector<PHLWINDOWREF>                    m_windowsFadingOut;
+    std::vector<PHLLSREF>                        m_surfacesFadingOut;
 
-    std::unordered_map<std::string, MONITORID> m_mMonitorIDMap;
+    std::unordered_map<std::string, MONITORID>   m_monitorIDMap;
+    std::unordered_map<std::string, WORKSPACEID> m_seenMonitorWorkspaceMap; // map of seen monitor names to workspace IDs
 
-    void                                       initServer(std::string socketName, int socketFd);
-    void                                       startCompositor();
-    void                                       stopCompositor();
-    void                                       cleanup();
-    void                                       bumpNofile();
-    void                                       restoreNofile();
+    void                                         initServer(std::string socketName, int socketFd);
+    void                                         startCompositor();
+    void                                         stopCompositor();
+    void                                         cleanup();
+    void                                         bumpNofile();
+    void                                         restoreNofile();
 
-    WP<CWLSurfaceResource>                     m_pLastFocus;
-    PHLWINDOWREF                               m_pLastWindow;
-    PHLMONITORREF                              m_pLastMonitor;
+    WP<CWLSurfaceResource>                       m_lastFocus;
+    PHLWINDOWREF                                 m_lastWindow;
+    PHLMONITORREF                                m_lastMonitor;
 
-    std::vector<PHLWINDOWREF>                  m_vWindowFocusHistory; // first element is the most recently focused.
+    std::vector<PHLWINDOWREF>                    m_windowFocusHistory; // first element is the most recently focused
 
-    bool                                       m_bReadyToProcess = false;
-    bool                                       m_bSessionActive  = true;
-    bool                                       m_bDPMSStateON    = true;
-    bool                                       m_bUnsafeState    = false; // unsafe state is when there is no monitors.
-    bool                                       m_bNextIsUnsafe   = false;
-    PHLMONITORREF                              m_pUnsafeOutput; // fallback output for the unsafe state
-    bool                                       m_bIsShuttingDown         = false;
-    bool                                       m_bFinalRequests          = false;
-    bool                                       m_bDesktopEnvSet          = false;
-    bool                                       m_bWantsXwayland          = true;
-    bool                                       m_bOnlyConfigVerification = false;
+    bool                                         m_readyToProcess = false;
+    bool                                         m_sessionActive  = true;
+    bool                                         m_dpmsStateOn    = true;
+    bool                                         m_unsafeState    = false; // unsafe state is when there is no monitors
+    PHLMONITORREF                                m_unsafeOutput;           // fallback output for the unsafe state
+    bool                                         m_isShuttingDown         = false;
+    bool                                         m_finalRequests          = false;
+    bool                                         m_desktopEnvSet          = false;
+    bool                                         m_wantsXwayland          = true;
+    bool                                         m_onlyConfigVerification = false;
 
     // ------------------------------------------------- //
 
@@ -85,7 +85,7 @@ class CCompositor {
     void                   focusSurface(SP<CWLSurfaceResource>, PHLWINDOW pWindowOwner = nullptr);
     bool                   monitorExists(PHLMONITOR);
     PHLWINDOW              vectorToWindowUnified(const Vector2D&, uint8_t properties, PHLWINDOW pIgnoreWindow = nullptr);
-    SP<CWLSurfaceResource> vectorToLayerSurface(const Vector2D&, std::vector<PHLLSREF>*, Vector2D*, PHLLS*);
+    SP<CWLSurfaceResource> vectorToLayerSurface(const Vector2D&, std::vector<PHLLSREF>*, Vector2D*, PHLLS*, bool aboveLockscreen = false);
     SP<CWLSurfaceResource> vectorToLayerPopupSurface(const Vector2D&, PHLMONITOR monitor, Vector2D*, PHLLS*);
     SP<CWLSurfaceResource> vectorWindowToSurface(const Vector2D&, PHLWINDOW, Vector2D& sl);
     Vector2D               vectorToSurfaceLocal(const Vector2D&, PHLWINDOW, SP<CWLSurfaceResource>);
@@ -152,7 +152,7 @@ class CCompositor {
     NColorManagement::SImageDescription getPreferredImageDescription();
     bool                                shouldChangePreferredImageDescription();
 
-    std::string                         explicitConfigPath;
+    std::string                         m_explicitConfigPath;
 
   private:
     void             initAllSignals();
@@ -165,9 +165,9 @@ class CCompositor {
     void             removeLockFile();
     void             setMallocThreshold();
 
-    uint64_t         m_iHyprlandPID    = 0;
-    wl_event_source* m_critSigSource   = nullptr;
-    rlimit           m_sOriginalNofile = {};
+    uint64_t         m_hyprlandPID    = 0;
+    wl_event_source* m_critSigSource  = nullptr;
+    rlimit           m_originalNofile = {};
 };
 
 inline UP<CCompositor> g_pCompositor;

@@ -26,10 +26,12 @@ CVersionKeeperManager::CVersionKeeperManager() {
     if (!DATAROOT)
         return;
 
-    const auto LASTVER = NFsUtils::readFileAsString(*DATAROOT + "/" + VERSION_FILE_NAME);
+    auto LASTVER = NFsUtils::readFileAsString(*DATAROOT + "/" + VERSION_FILE_NAME);
 
-    if (!LASTVER)
-        return;
+    if (!LASTVER) {
+        NFsUtils::writeToFile(*DATAROOT + "/" + VERSION_FILE_NAME, "0.0.0");
+        LASTVER = "0.0.0";
+    }
 
     if (!isVersionOlderThanRunning(*LASTVER)) {
         Debug::log(LOG, "CVersionKeeperManager: Read version {} matches or is older than running.", *LASTVER);
@@ -48,7 +50,7 @@ CVersionKeeperManager::CVersionKeeperManager() {
         return;
     }
 
-    m_bFired = true;
+    m_fired = true;
 
     g_pEventLoopManager->doLater([]() {
         CProcess proc("hyprland-update-screen", {"--new-version", HYPRLAND_VERSION});
@@ -79,5 +81,5 @@ bool CVersionKeeperManager::isVersionOlderThanRunning(const std::string& ver) {
 }
 
 bool CVersionKeeperManager::fired() {
-    return m_bFired;
+    return m_fired;
 }

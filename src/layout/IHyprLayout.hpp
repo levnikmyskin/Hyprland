@@ -204,14 +204,21 @@ class IHyprLayout {
     virtual Vector2D predictSizeForNewWindow(PHLWINDOW pWindow);
     virtual Vector2D predictSizeForNewWindowFloating(PHLWINDOW pWindow);
 
-  private:
-    int          m_iMouseMoveEventCount;
-    Vector2D     m_vBeginDragXY;
-    Vector2D     m_vLastDragXY;
-    Vector2D     m_vBeginDragPositionXY;
-    Vector2D     m_vBeginDragSizeXY;
-    Vector2D     m_vDraggingWindowOriginalFloatSize;
-    eRectCorner  m_eGrabbedCorner = CORNER_TOPLEFT;
+    /*
+        Called to try to pick up window for dragging.
+        Updates drag related variables and floats window if threshold reached.
+        Return true to reject
+    */
+    virtual bool updateDragWindow();
 
-    PHLWINDOWREF m_pLastTiledWindow;
+  private:
+    int          m_mouseMoveEventCount;
+    Vector2D     m_beginDragXY;
+    Vector2D     m_lastDragXY;
+    Vector2D     m_beginDragPositionXY;
+    Vector2D     m_beginDragSizeXY;
+    Vector2D     m_draggingWindowOriginalFloatSize;
+    eRectCorner  m_grabbedCorner = CORNER_TOPLEFT;
+
+    PHLWINDOWREF m_lastTiledWindow;
 };

@@ -1,21 +1,16 @@
-#pragma once
+#version 300 es
+#extension GL_ARB_shading_language_include : enable
 
-#include <string>
-#include <format>
-#include "SharedValues.hpp"
-
-// makes a stencil without corners
-inline const std::string FRAGBORDER1 = R"#(
 precision highp float;
-varying vec4 v_color;
-varying vec2 v_texcoord;
+in vec2 v_texcoord;
 
-uniform vec2 topLeft;
-uniform vec2 fullSize;
+uniform int skipCM;
+uniform int sourceTF; // eTransferFunction
+uniform int targetTF; // eTransferFunction
+uniform mat4x2 targetPrimaries;
+
 uniform vec2 fullSizeUntransformed;
-uniform float radius;
 uniform float radiusOuter;
-uniform float roundingPower;
 uniform float thick;
 
 // Gradients are in OkLabA!!!! {l, a, b, alpha}
@@ -28,19 +23,21 @@ uniform float angle2;
 uniform float gradientLerp;
 uniform float alpha;
 
-float linearToGamma(float x) {
-    return x >= 0.0031308 ? 1.055 * pow(x, 0.416666666) - 0.055 : 12.92 * x;
-}
+#include "rounding.glsl"
+#include "CM.glsl"
 
 vec4 okLabAToSrgb(vec4 lab) {
     float l = pow(lab[0] + lab[1] * 0.3963377774 + lab[2] * 0.2158037573, 3.0);
     float m = pow(lab[0] + lab[1] * (-0.1055613458) + lab[2] * (-0.0638541728), 3.0);
     float s = pow(lab[0] + lab[1] * (-0.0894841775) + lab[2] * (-1.2914855480), 3.0);
 
-    return vec4(linearToGamma(l * 4.0767416621 + m * -3.3077115913 + s * 0.2309699292), 
-                linearToGamma(l * (-1.2684380046) + m * 2.6097574011 + s * (-0.3413193965)),
-                linearToGamma(l * (-0.0041960863) + m * (-0.7034186147) + s * 1.7076147010),
-                lab[3]);
+    return vec4(fromLinearRGB(
+		vec3(
+			l * 4.0767416621 + m * -3.3077115913 + s * 0.2309699292, 
+			l * (-1.2684380046) + m * 2.6097574011 + s * (-0.3413193965),
+			l * (-0.0041960863) + m * (-0.7034186147) + s * 1.7076147010
+		), CM_TRANSFER_FUNCTION_SRGB
+	), lab[3]);
 }
 
 vec4 getOkColorForCoordArray1(vec2 normalizedCoord) {
@@ -112,8 +109,8 @@ vec4 getColorForCoord(vec2 normalizedCoord) {
     return okLabAToSrgb(mix(result1, result2, gradientLerp));
 }
 
+layout(location = 0) out vec4 fragColor;
 void main() {
-
     highp vec2 pixCoord = vec2(gl_FragCoord);
     highp vec2 pixCoordOuter = pixCoord;
     highp vec2 originalPixCoord = v_texcoord;
@@ -135,13 +132,9 @@ void main() {
     pixCoordOuter += vec2(1.0, 1.0) / fullSize;
 
     if (min(pixCoord.x, pixCoord.y) > 0.0 && radius > 0.0) {
-        // smoothing constant for the edge: more = blurrier, but smoother
-        const float SMOOTHING_CONSTANT = )#" +
-    std::format("{:.7f}", SHADER_ROUNDED_SMOOTHING_FACTOR) + R"#(;
-
 	    float dist = pow(pow(pixCoord.x,roundingPower)+pow(pixCoord.y,roundingPower),1.0/roundingPower);
 	    float distOuter = pow(pow(pixCoordOuter.x,roundingPower)+pow(pixCoordOuter.y,roundingPower),1.0/roundingPower);
-      float h = (thick / 2.0);
+        float h = (thick / 2.0);
 
 	    if (dist < radius - h) {
             // lower
@@ -180,8 +173,10 @@ void main() {
     pixColor = getColorForCoord(v_texcoord);
     pixColor.rgb *= pixColor[3];
 
+	if (skipCM == 0)
+        pixColor = doColorManagement(pixColor, sourceTF, targetTF, targetPrimaries);
+
     pixColor *= alpha * additionalAlpha;
 
-    gl_FragColor = pixColor;
+    fragColor = pixColor;
 }
-)#";

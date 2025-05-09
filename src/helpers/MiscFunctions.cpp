@@ -122,7 +122,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             const auto NAME = in.substr(8);
             const auto WS   = g_pCompositor->getWorkspaceByName("special:" + NAME);
 
-            return {WS ? WS->m_iID : g_pCompositor->getNewSpecialID(), "special:" + NAME};
+            return {WS ? WS->m_id : g_pCompositor->getNewSpecialID(), "special:" + NAME};
         }
 
         result.id = SPECIAL_WORKSPACE_START;
@@ -133,13 +133,13 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
         if (!WORKSPACE) {
             result.id = g_pCompositor->getNextAvailableNamedWorkspace();
         } else {
-            result.id = WORKSPACE->m_iID;
+            result.id = WORKSPACE->m_id;
         }
         result.name = WORKSPACENAME;
     } else if (in.starts_with("empty")) {
         const bool same_mon = in.substr(5).contains("m");
         const bool next     = in.substr(5).contains("n");
-        if ((same_mon || next) && !g_pCompositor->m_pLastMonitor) {
+        if ((same_mon || next) && !g_pCompositor->m_lastMonitor) {
             Debug::log(ERR, "Empty monitor workspace on monitor null!");
             return {WORKSPACE_INVALID};
         }
@@ -148,12 +148,12 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
         if (same_mon) {
             for (auto const& rule : g_pConfigManager->getAllWorkspaceRules()) {
                 const auto PMONITOR = g_pCompositor->getMonitorFromName(rule.monitor);
-                if (PMONITOR && (PMONITOR->ID != g_pCompositor->m_pLastMonitor->ID))
+                if (PMONITOR && (PMONITOR->m_id != g_pCompositor->m_lastMonitor->m_id))
                     invalidWSes.insert(rule.workspaceId);
             }
         }
 
-        WORKSPACEID id = next ? g_pCompositor->m_pLastMonitor->activeWorkspaceID() : 0;
+        WORKSPACEID id = next ? g_pCompositor->m_lastMonitor->activeWorkspaceID() : 0;
         while (++id < LONG_MAX) {
             const auto PWORKSPACE = g_pCompositor->getWorkspaceByID(id);
             if (!invalidWSes.contains(id) && (!PWORKSPACE || PWORKSPACE->getWindows() == 0)) {
@@ -162,24 +162,47 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             }
         }
     } else if (in.starts_with("prev")) {
-        if (!g_pCompositor->m_pLastMonitor)
+        if (!g_pCompositor->m_lastMonitor)
             return {WORKSPACE_INVALID};
 
-        const auto PWORKSPACE = g_pCompositor->m_pLastMonitor->activeWorkspace;
+        const auto PWORKSPACE = g_pCompositor->m_lastMonitor->m_activeWorkspace;
 
         if (!valid(PWORKSPACE))
             return {WORKSPACE_INVALID};
 
-        const auto PLASTWORKSPACE = g_pCompositor->getWorkspaceByID(PWORKSPACE->getPrevWorkspaceIDName().id);
+        const auto PREVWORKSPACEIDNAME = PWORKSPACE->getPrevWorkspaceIDName();
 
-        if (!PLASTWORKSPACE)
+        if (PREVWORKSPACEIDNAME.id == -1)
             return {WORKSPACE_INVALID};
 
-        return {PLASTWORKSPACE->m_iID, PLASTWORKSPACE->m_szName};
+        const auto PLASTWORKSPACE = g_pCompositor->getWorkspaceByID(PREVWORKSPACEIDNAME.id);
+
+        if (!PLASTWORKSPACE) {
+            Debug::log(LOG, "previous workspace {} doesn't exist yet", PREVWORKSPACEIDNAME.id);
+            return {PREVWORKSPACEIDNAME.id, PREVWORKSPACEIDNAME.name};
+        }
+
+        return {PLASTWORKSPACE->m_id, PLASTWORKSPACE->m_name};
+    } else if (in == "next") {
+        if (!g_pCompositor->m_lastMonitor || !g_pCompositor->m_lastMonitor->m_activeWorkspace) {
+            Debug::log(ERR, "no active monitor or workspace for 'next'");
+            return {WORKSPACE_INVALID};
+        }
+
+        auto        PCURRENTWORKSPACE = g_pCompositor->m_lastMonitor->m_activeWorkspace;
+
+        WORKSPACEID nextId = PCURRENTWORKSPACE->m_id + 1;
+
+        if (nextId <= 0)
+            return {WORKSPACE_INVALID};
+
+        result.id   = nextId;
+        result.name = std::to_string(nextId);
+        return result;
     } else {
         if (in[0] == 'r' && (in[1] == '-' || in[1] == '+' || in[1] == '~') && isNumber(in.substr(2))) {
             bool absolute = in[1] == '~';
-            if (!g_pCompositor->m_pLastMonitor) {
+            if (!g_pCompositor->m_lastMonitor) {
                 Debug::log(ERR, "Relative monitor workspace on monitor null!");
                 return {WORKSPACE_INVALID};
             }
@@ -196,15 +219,15 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             std::set<WORKSPACEID> invalidWSes;
 
             // Collect all the workspaces we can't jump to.
-            for (auto const& ws : g_pCompositor->m_vWorkspaces) {
-                if (ws->m_bIsSpecialWorkspace || (ws->m_pMonitor != g_pCompositor->m_pLastMonitor)) {
+            for (auto const& ws : g_pCompositor->m_workspaces) {
+                if (ws->m_isSpecialWorkspace || (ws->m_monitor != g_pCompositor->m_lastMonitor)) {
                     // Can't jump to this workspace
-                    invalidWSes.insert(ws->m_iID);
+                    invalidWSes.insert(ws->m_id);
                 }
             }
             for (auto const& rule : g_pConfigManager->getAllWorkspaceRules()) {
                 const auto PMONITOR = g_pCompositor->getMonitorFromName(rule.monitor);
-                if (!PMONITOR || PMONITOR->ID == g_pCompositor->m_pLastMonitor->ID) {
+                if (!PMONITOR || PMONITOR->m_id == g_pCompositor->m_lastMonitor->m_id) {
                     // Can't be invalid
                     continue;
                 }
@@ -214,11 +237,11 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
 
             // Prepare all named workspaces in case when we need them
             std::vector<WORKSPACEID> namedWSes;
-            for (auto const& ws : g_pCompositor->m_vWorkspaces) {
-                if (ws->m_bIsSpecialWorkspace || (ws->m_pMonitor != g_pCompositor->m_pLastMonitor) || ws->m_iID >= 0)
+            for (auto const& ws : g_pCompositor->m_workspaces) {
+                if (ws->m_isSpecialWorkspace || (ws->m_monitor != g_pCompositor->m_lastMonitor) || ws->m_id >= 0)
                     continue;
 
-                namedWSes.push_back(ws->m_iID);
+                namedWSes.push_back(ws->m_id);
             }
             std::sort(namedWSes.begin(), namedWSes.end());
 
@@ -242,7 +265,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             } else {
 
                 // Just take a blind guess at where we'll probably end up
-                WORKSPACEID activeWSID    = g_pCompositor->m_pLastMonitor->activeWorkspace ? g_pCompositor->m_pLastMonitor->activeWorkspace->m_iID : 1;
+                WORKSPACEID activeWSID    = g_pCompositor->m_lastMonitor->m_activeWorkspace ? g_pCompositor->m_lastMonitor->m_activeWorkspace->m_id : 1;
                 WORKSPACEID predictedWSID = activeWSID + remains;
                 int         remainingWSes = 0;
                 char        walkDir       = in[1];
@@ -333,7 +356,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
 
             const auto PWORKSPACE = g_pCompositor->getWorkspaceByID(result.id);
             if (PWORKSPACE)
-                result.name = g_pCompositor->getWorkspaceByID(result.id)->m_szName;
+                result.name = g_pCompositor->getWorkspaceByID(result.id)->m_name;
             else
                 result.name = std::to_string(result.id);
 
@@ -341,7 +364,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             bool onAllMonitors = in[0] == 'e';
             bool absolute      = in[1] == '~';
 
-            if (!g_pCompositor->m_pLastMonitor) {
+            if (!g_pCompositor->m_lastMonitor) {
                 Debug::log(ERR, "Relative monitor workspace on monitor null!");
                 return {WORKSPACE_INVALID};
             }
@@ -358,11 +381,11 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             int                      remains = (int)result.id;
 
             std::vector<WORKSPACEID> validWSes;
-            for (auto const& ws : g_pCompositor->m_vWorkspaces) {
-                if (ws->m_bIsSpecialWorkspace || (ws->m_pMonitor != g_pCompositor->m_pLastMonitor && !onAllMonitors))
+            for (auto const& ws : g_pCompositor->m_workspaces) {
+                if (ws->m_isSpecialWorkspace || (ws->m_monitor != g_pCompositor->m_lastMonitor && !onAllMonitors))
                     continue;
 
-                validWSes.push_back(ws->m_iID);
+                validWSes.push_back(ws->m_id);
             }
 
             std::sort(validWSes.begin(), validWSes.end());
@@ -384,7 +407,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
                 remains = remains < 0 ? -((-remains) % validWSes.size()) : remains % validWSes.size();
 
                 // get the current item
-                WORKSPACEID activeWSID = g_pCompositor->m_pLastMonitor->activeWorkspace ? g_pCompositor->m_pLastMonitor->activeWorkspace->m_iID : 1;
+                WORKSPACEID activeWSID = g_pCompositor->m_lastMonitor->m_activeWorkspace ? g_pCompositor->m_lastMonitor->m_activeWorkspace->m_id : 1;
                 for (ssize_t i = 0; i < (ssize_t)validWSes.size(); i++) {
                     if (validWSes[i] == activeWSID) {
                         currentItem = i;
@@ -404,11 +427,11 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
             }
 
             result.id   = validWSes[currentItem];
-            result.name = g_pCompositor->getWorkspaceByID(validWSes[currentItem])->m_szName;
+            result.name = g_pCompositor->getWorkspaceByID(validWSes[currentItem])->m_name;
         } else {
             if (in[0] == '+' || in[0] == '-') {
-                if (g_pCompositor->m_pLastMonitor) {
-                    const auto PLUSMINUSRESULT = getPlusMinusKeywordResult(in, g_pCompositor->m_pLastMonitor->activeWorkspaceID());
+                if (g_pCompositor->m_lastMonitor) {
+                    const auto PLUSMINUSRESULT = getPlusMinusKeywordResult(in, g_pCompositor->m_lastMonitor->activeWorkspaceID());
                     if (!PLUSMINUSRESULT.has_value())
                         return {WORKSPACE_INVALID};
 
@@ -423,7 +446,7 @@ SWorkspaceIDName getWorkspaceIDNameFromString(const std::string& in) {
                 // maybe name
                 const auto PWORKSPACE = g_pCompositor->getWorkspaceByName(in);
                 if (PWORKSPACE)
-                    result.id = PWORKSPACE->m_iID;
+                    result.id = PWORKSPACE->m_id;
             }
 
             result.name = std::to_string(result.id);
@@ -816,4 +839,39 @@ float stringToPercentage(const std::string& VALUE, const float REL) {
         return (std::stof(VALUE.substr(0, VALUE.length() - 1)) * REL) / 100.f;
     else
         return std::stof(VALUE);
+}
+
+// Checks if Nvidia driver major version is at least given version.
+// Useful for explicit_sync_kms and ctm_animation as they only work
+// past certain driver versions.
+bool isNvidiaDriverVersionAtLeast(int threshold) {
+    static int  driverMajor = 0;
+    static bool once        = true;
+
+    if (once) {
+        once = false;
+
+        std::error_code ec;
+        if (std::filesystem::exists("/sys/module/nvidia_drm/version", ec) && !ec) {
+            std::ifstream ifs("/sys/module/nvidia_drm/version");
+            if (ifs.good()) {
+                try {
+                    std::string driverInfo((std::istreambuf_iterator<char>(ifs)), (std::istreambuf_iterator<char>()));
+
+                    size_t      firstDot = driverInfo.find('.');
+                    if (firstDot != std::string::npos)
+                        driverMajor = std::stoi(driverInfo.substr(0, firstDot));
+
+                    Debug::log(LOG, "Parsed NVIDIA major version: {}", driverMajor);
+
+                } catch (std::exception& e) {
+                    driverMajor = 0; // Default to 0 if parsing fails
+                }
+
+                ifs.close();
+            }
+        }
+    }
+
+    return driverMajor >= threshold;
 }

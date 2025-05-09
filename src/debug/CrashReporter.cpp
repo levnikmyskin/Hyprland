@@ -130,11 +130,11 @@ void NCrashReporter::createAndSaveCrash(int sig) {
         for (size_t i = 0; i < count; i++) {
             auto p = plugins[i];
             finalCrashReport += '\t';
-            finalCrashReport += p->name;
+            finalCrashReport += p->m_name;
             finalCrashReport += " (";
-            finalCrashReport += p->author;
+            finalCrashReport += p->m_author;
             finalCrashReport += ") ";
-            finalCrashReport += p->version;
+            finalCrashReport += p->m_version;
             finalCrashReport += '\n';
         }
 
@@ -192,7 +192,7 @@ void NCrashReporter::createAndSaveCrash(int sig) {
 #endif
     };
     u_int  miblen        = sizeof(mib) / sizeof(mib[0]);
-    char   exe[PATH_MAX] = "";
+    char   exe[PATH_MAX] = "/nonexistent";
     size_t sz            = sizeof(exe);
     sysctl(mib, miblen, &exe, &sz, NULL, 0);
     const auto FPATH = std::filesystem::canonical(exe);
@@ -242,5 +242,5 @@ void NCrashReporter::createAndSaveCrash(int sig) {
 
     finalCrashReport += "\n\nLog tail:\n";
 
-    finalCrashReport += std::string_view(Debug::rollingLog).substr(Debug::rollingLog.find('\n') + 1);
+    finalCrashReport += std::string_view(Debug::m_rollingLog).substr(Debug::m_rollingLog.find('\n') + 1);
 }
